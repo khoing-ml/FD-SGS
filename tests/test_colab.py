@@ -10,12 +10,19 @@ def test_colab_notebook_is_valid_python_and_covers_the_run():
         pytest.skip("Colab notebook is local and excluded from Git")
     notebook = json.loads(notebook_path.read_text())
     assert notebook["nbformat"] == 4
-    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    # Keep a locally hardcoded token out of pytest's assertion output.
+    source = "\n".join(
+        "".join("WANDB_API_KEY = <redacted>\n" if line.lstrip().startswith("WANDB_API_KEY = ") else line
+                for line in cell["source"])
+        for cell in notebook["cells"]
+    )
     for flag in ("--prompt-dataset", "--eval-rewards", "--wandb-mode", "--offload", "--dry-run"):
         assert flag in source
     assert 'SOURCE_MODE = "upload"' in source and 'SOURCE_MODE == "github"' in source
-    assert 'WANDB_API_KEY = "PASTE_YOUR_WANDB_API_KEY_HERE"' in source
+    assert "WANDB_API_KEY = <redacted>" in source
     assert 'TWIN_SAMPLER = "fdfo"' in source
+    assert '#@title Probe sampler settings' in source
+    assert 'EXPLORATION = 0.0025 #@param' in source
     assert 'GUIDANCE_STEPS = [1, 2, 3, 4, 5, 6]' in source
     assert 'GUIDANCE_EVAL = "final-rollout"' in source
     assert '"--guidance-eval", GUIDANCE_EVAL' in source
@@ -26,4 +33,6 @@ def test_colab_notebook_is_valid_python_and_covers_the_run():
     assert "userdata.get(" not in source
     for cell in notebook["cells"]:
         if cell["cell_type"] == "code":
-            compile("".join(cell["source"]), "fd_sgs_colab.ipynb", "exec")
+            # Colab accepts notebook shell lines that are not Python syntax.
+            python_source = "".join(line for line in cell["source"] if not line.lstrip().startswith("!"))
+            compile(python_source, "fd_sgs_colab.ipynb", "exec")
