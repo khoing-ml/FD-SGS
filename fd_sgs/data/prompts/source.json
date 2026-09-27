@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/NhuGiap04/SGS",
+  "revision": "f410ab526c996bb9e7828ba92f02b68e35473a2f",
+  "files": {
+    "benchmark_ir.json": {
+      "path": "text2img/prompts/benchmark_ir.json",
+      "sha256": "e12ca8423c7978f00b0bf2af2832e9458c8c1149b9e7b45bac965f57b0300c8a",
+      "prompts": 100
+    },
+    "hps_v2_all_eval.txt": {
+      "path": "text2img/prompts/hps_v2_all_eval.txt",
+      "sha256": "d2983db1afbbcd4268411d4c80e796f9e6d62c6e0ecb23e51099f8048bfce2ab",
+      "prompts": 50
+    }
+  }
+}

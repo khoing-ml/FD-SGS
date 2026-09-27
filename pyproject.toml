@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fd-sgs"
+version = "0.1.0"
+description = "Experimental finite-difference Stein guidance for Z-Image-Turbo"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "torch>=2.5", "diffusers==0.36.0", "transformers>=4.51,<5",
+  "accelerate>=1.1", "safetensors>=0.4", "Pillow>=10", "sentencepiece", "wandb>=0.19,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+rewards = ["image-reward==1.5", "open-clip-torch==2.24.0", "openai-clip==1.0.1", "torchvision"]
+
+[project.scripts]
+fd-sgs = "fd_sgs.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fd_sgs*"]
+
+[tool.setuptools.package-data]
+fd_sgs = ["data/prompts/*.json", "data/prompts/*.txt"]

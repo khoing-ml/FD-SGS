@@ -1,0 +1,2 @@
+# Install all four reward backends and the CLI from the repository root.
+-e .[rewards]
