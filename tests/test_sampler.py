@@ -80,8 +80,24 @@ def test_unguided_matches_native_nine_step_pipeline():
     assert stats["reward_image_evaluations"] == 2
 
 
+def test_fdfo_is_default_and_edm_alias_preserves_samples():
+    cfg = config()
+    assert cfg.twin_sampler == "fdfo"
+    fdfo, _ = sample(ToyPipe(), "test", reward, cfg)
+    edm, _ = sample(ToyPipe(), "test", reward, replace(cfg, twin_sampler="edm"))
+    torch.testing.assert_close(torch.stack(fdfo), torch.stack(edm))
+
+
+@pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
+def test_first_step_has_finite_difference_guidance_with_shared_initial_noise(twin_sampler):
+    _, stats = sample(ToyPipe(), "test", reward,
+                      config(method="independent-fd", twin_sampler=twin_sampler))
+    assert stats["steps"][0]["guided"]
+    assert max(stats["steps"][0]["correction_ratios"]) > 0
+
+
 @pytest.mark.parametrize("method", ["fd-sgs", "independent-fd"])
-@pytest.mark.parametrize("twin_sampler", ["edm", "flow-grpo"])
+@pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
 @pytest.mark.parametrize("probes", [1, 3])
 def test_guidance_schedule_budget_and_reproducibility(method, twin_sampler, probes):
     pipe = ToyPipe()
@@ -94,16 +110,16 @@ def test_guidance_schedule_budget_and_reproducibility(method, twin_sampler, prob
     assert stats["denoiser_batch_elements"] == 8 * 2 * (1 + probes)
     assert stats["twin_trajectories"] == 2 * probes
     assert stats["twin_sampler"] == twin_sampler
-    assert stats["reward_calls"] == 4
-    assert stats["reward_image_evaluations"] == 3 * 2 * (1 + probes) + 2
-    assert [x["step"] for x in stats["steps"] if x["guided"]] == [3, 5, 6]
+    assert stats["reward_calls"] == 7
+    assert stats["reward_image_evaluations"] == 6 * 2 * (1 + probes) + 2
+    assert [x["step"] for x in stats["steps"] if x["guided"]] == [1, 2, 3, 4, 5, 6]
     for step in stats["steps"]:
         if step["guided"]:
             assert max(step["correction_ratios"]) <= .025001
     assert pipe.freed
 
 
-@pytest.mark.parametrize("twin_sampler", ["edm", "flow-grpo"])
+@pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
 def test_zero_rho_preserves_anchor_and_single_particle_matches_independent(twin_sampler):
     baseline, _ = sample(ToyPipe(), "test", reward, config(method="unguided"))
     disabled, _ = sample(ToyPipe(), "test", reward, config(rho=0, twin_sampler=twin_sampler, probes=3))
@@ -114,7 +130,7 @@ def test_zero_rho_preserves_anchor_and_single_particle_matches_independent(twin_
     torch.testing.assert_close(torch.stack(stein), torch.stack(independent))
 
 
-@pytest.mark.parametrize("twin_sampler", ["edm", "flow-grpo"])
+@pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
 def test_guidance_changes_output_and_zero_exploration_has_no_fd_signal(twin_sampler):
     baseline, _ = sample(ToyPipe(), "test", reward, config(method="unguided"))
     guided, _ = sample(ToyPipe(), "test", reward, config(twin_sampler=twin_sampler, probes=3))
@@ -163,7 +179,7 @@ def test_multi_probe_pairing_and_averaging(monkeypatch):
     monkeypatch.setattr(sampler, "fd_direction", record_pairs)
     monkeypatch.setattr(sampler, "stein_field", record_stein)
     sample(ToyPipe(), "test", reward, config(probes=3, twin_sampler="flow-grpo"))
-    assert observed["calls"] == 3
+    assert observed["calls"] == 6
 
 
 @pytest.mark.parametrize("wandb_mode", ["disabled", "offline"])
@@ -217,7 +233,7 @@ def test_step_callback_does_not_change_sampling_or_budget():
     actual, stats = sample(ToyPipe(), "test", reward, cfg, on_step=callback)
     torch.testing.assert_close(torch.stack(actual), torch.stack(reference))
     assert len(traces) == 8
-    assert len(previews) == 3
+    assert len(previews) == 6
     assert all(len(batch) == 6 for batch in previews)
     for key in ("sequential_nfe", "reward_calls", "reward_image_evaluations", "denoiser_batch_elements"):
         assert stats[key] == baseline[key]
@@ -290,4 +306,5 @@ def test_dry_run_lists_dataset_without_models_or_overwriting(monkeypatch, tmp_pa
     planned = json.loads(capsys.readouterr().out)
     assert planned["prompts"][0]["id"] == "005695-0057"
     assert len(planned["scorers"]) == 4
+    assert planned["configs"][0]["twin_sampler"] == "fdfo"
     assert (existing / "best.png").read_bytes() == b"keep"

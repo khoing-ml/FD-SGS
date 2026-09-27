@@ -13,11 +13,11 @@ from .core import fd_direction, flow_grpo_step, relative_correction, rms, stein_
 class SamplingConfig:
     particles: int = 4
     steps: int = 8
-    guidance_steps: tuple[int, ...] = (3, 5, 6)  # one-based, effective model steps
+    guidance_steps: tuple[int, ...] = (1, 2, 3, 4, 5, 6)  # one-based, effective model steps
     rho: float = 0.025
     repulsion: float = 0.1
     exploration: float = 0.0025
-    twin_sampler: str = "edm"
+    twin_sampler: str = "fdfo"
     noise_level: float = 0.05
     probes: int = 1
     trust_ratio: float = 0.1
@@ -30,8 +30,8 @@ class SamplingConfig:
     def __post_init__(self):
         if self.method not in {"fd-sgs", "independent-fd", "unguided"}:
             raise ValueError("Unknown sampling method")
-        if self.twin_sampler not in {"edm", "flow-grpo"}:
-            raise ValueError("twin_sampler must be edm or flow-grpo")
+        if self.twin_sampler not in {"fdfo", "edm", "flow-grpo"}:
+            raise ValueError("twin_sampler must be fdfo or flow-grpo (edm is an alias for fdfo)")
         if not isinstance(self.probes, int) or self.probes < 1:
             raise ValueError("probes must be a positive integer")
         if self.steps != 8:
@@ -140,8 +140,19 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
             trace = {"step": step, "sigma": s, "sigma_next": sn, "guided": False}
             clean_images = None
             correction = torch.zeros_like(base)
+            if paired:
+                noise = torch.randn(twins.shape, generator=probe_generator, device=device, dtype=torch.float32)
+                if config.twin_sampler == "flow-grpo":
+                    probe_base = flow_grpo_step(twins, velocity[k:], s, sn, config.noise_level,
+                                                noise, sigma_cap=float(sigmas[1]))
+                else:  # FDFO overshoot/re-noise; "edm" is a legacy alias.
+                    probe_base = stochastic_flow_step(twins, velocity[k:], s, sn, config.exploration, noise)
             if paired and step in config.guidance_steps and config.rho > 0:
-                clean = states - s * velocity
+                # Score the probe after this step's stochastic transition so the
+                # first step has a finite-difference signal despite shared initial noise.
+                # The anchor endpoint prediction equals anchors - s * velocity[:k].
+                clean = torch.cat([base - sn * velocity[:k],
+                                   probe_base - sn * velocity[k:]])
                 clean_images = decode_images(pipe, clean, config.decode_batch_size)
                 scores = score(clean_images, guidance=True)
                 pair_directions = fd_direction(clean[:k].repeat(repeats), clean[k:],
@@ -154,15 +165,9 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
                              twin_rewards=scores[k:].tolist(),
                              correction_ratios=(rms(correction) / (rms(displacement) + 1e-8)).flatten().tolist())
             if paired:
-                noise = torch.randn(twins.shape, generator=probe_generator, device=device, dtype=torch.float32)
-                if config.twin_sampler == "flow-grpo":
-                    twins = flow_grpo_step(twins, velocity[k:], s, sn, config.noise_level,
-                                           noise, sigma_cap=float(sigmas[1]))
-                else:
-                    twins = stochastic_flow_step(twins, velocity[k:], s, sn, config.exploration, noise)
                 # Translate each anchor's probes by the SAME correction so guidance itself
                 # does not become an uncontrolled source of pair separation.
-                twins = twins + correction.repeat(repeats)
+                twins = probe_base + correction.repeat(repeats)
             anchors = base + correction
             if not torch.isfinite(anchors).all() or (paired and not torch.isfinite(twins).all()):
                 raise FloatingPointError(f"Nonfinite latent at step {step}")

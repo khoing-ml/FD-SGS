@@ -94,8 +94,9 @@ To run only FD-SGS:
 
 ```bash
 fd-sgs --prompt "A mountain village reflected in a lake at sunrise" \
-  --particles 4 --rho 0.025 --guidance-steps 3 5 6 \
-  --exploration 0.0025 --repulsion 0.1 --offload --output outputs/village
+  --particles 4 --rho 0.025 --guidance-steps 1 2 3 4 5 6 \
+  --twin-sampler fdfo --exploration 0.0025 --repulsion 0.1 \
+  --offload --output outputs/village
 ```
 
 To use Flow-GRPO Euler–Maruyama exploration with two probes per anchor:
@@ -109,10 +110,15 @@ fd-sgs --prompt "A mountain village reflected in a lake at sunrise" \
 
 `--particles K` controls the number of final candidate images. `--probes B` controls
 the number of local alternatives used to estimate each anchor's guidance; probes are
-not returned as final candidates. The default remains one EDM probe per anchor.
+not returned as final candidates. The default is one FDFO probe per anchor.
 For multiple probes, average their individually RMS-normalized, reward-weighted
 directions before Stein aggregation. Each probe starts at its anchor's initial noise
 and receives an independent exploration-noise draw at each step.
+
+`--twin-sampler fdfo` uses the flow-adapted EDM overshoot/re-noise transition
+described in the [FDFO reference implementation](https://github.com/NVlabs/finite-difference-flow-optimization).
+The previous name `edm` remains an alias for the same transition. `--exploration`
+sets its re-noising strength; the default is `0.0025`.
 
 `--twin-sampler flow-grpo` uses the `sde` drift and noise coefficients from the
 [official Flow-GRPO sampler](https://github.com/yifan123/flow_grpo/blob/main/flow_grpo/diffusers_patch/sd3_sde_with_logprob.py).
@@ -121,7 +127,7 @@ the FD-Stein correction. At sigma=1, the noise denominator uses the second sched
 sigma, matching upstream. All eight probe transitions use the SDE formula, including
 the last interval; final probes are discarded. Calculations use float32.
 `--noise-level 0` gives deterministic Euler probes; `0.05` is an experimental starting
-value, not a validated optimum for Z-Image. `--exploration` controls only EDM probes,
+value, not a validated optimum for Z-Image. `--exploration` controls only FDFO probes,
 while `--noise-level` controls only Flow-GRPO probes; the strengths are not interchangeable.
 This uses the sampling transition without GRPO training, transition log-probabilities,
 DAS importance weights, tempering, or manifold projection. Existing Stein correction
@@ -191,10 +197,13 @@ result logging.
 ## Implemented method
 
 - Four anchors by default, each with one or more persistent stochastic probes sharing initial noise.
-- Deterministic Euler anchor updates; probes use EDM-style overshoot/re-noise by default,
+- Deterministic Euler anchor updates; probes use FDFO overshoot/re-noise by default,
   or Flow-GRPO Euler–Maruyama when selected. All probes for an anchor receive its Stein correction.
-- At **one-based** steps 3, 5, and 6, reconstruct `z_clean = x_sigma - sigma * velocity`.
-  Z-Image's transformer output is negated to obtain the scheduler's velocity convention.
+- At **one-based** steps 1 through 6, decode predicted-clean endpoints. The anchor
+  prediction is `base - sigma_next * velocity` (equal to `x_sigma - sigma * velocity`);
+  the probe prediction uses its freshly sampled endpoint at `sigma_next`. This gives
+  step 1 a real finite-difference signal despite shared initial noise. Z-Image's
+  transformer output is negated to obtain the scheduler's velocity convention.
 - Decode both clean predictions, score with PickScore, and compute
   `(reward_twin - reward_anchor) * delta_clean_latent / (RMS(delta_clean_latent) + eps)`.
   With B probes, average B such directions per anchor; score each anchor only once per guided step.
@@ -219,22 +228,22 @@ SGS's custom image resizing. Avoid comparing its absolute scores across implemen
 
 ## Compute accounting and limitations
 
-For K=4, B=1, and the default three guidance steps (either probe sampler):
+For K=4, B=1, and the default six guidance steps (either probe sampler):
 
 | Method | Sequential NFE / transformer calls | Denoiser batch elements | Reward images |
 |---|---:|---:|---:|
 | Unguided / Best-of-4 | 8 | 32 | 4 final |
-| Independent FD | 8 | 64 | 24 guidance + 4 final |
-| FD-SGS | 8 | 64 | 24 guidance + 4 final |
+| Independent FD | 8 | 64 | 48 guidance + 4 final |
+| FD-SGS | 8 | 64 | 48 guidance + 4 final |
 
 For B probes, guided runs evaluate `8*K*(1+B)` denoiser batch elements and
-`3*K*(1+B)+K` reward images with the default guidance schedule. For K=4, B=2,
-that is 96 denoiser batch elements and 40 reward images. Sequential NFE remains eight.
+`6*K*(1+B)+K` reward images with the default guidance schedule. For K=4, B=2,
+that is 96 denoiser batch elements and 76 reward images. Sequential NFE remains eight.
 Metrics record the active probe sampler, probe count, and total twin trajectories.
 Step `twin_rewards` lists are flattened in probe-major order: all K anchors' first
 probes, then all K anchors' second probes, and so on.
 
-`reward_calls` counts adapter invocations (4 in guided runs), not internal microbatches
+`reward_calls` counts adapter invocations (7 in guided runs), not internal microbatches
 or remote requests. `reward_image_evaluations` counts individual scored images.
 Metrics also record each guided step's scores/correction ratios, sigmas, final scores,
 best index, wall time, peak allocated/reserved CUDA memory, config, and library versions.

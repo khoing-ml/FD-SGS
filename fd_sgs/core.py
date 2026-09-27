@@ -47,7 +47,7 @@ def relative_correction(field, base_displacement, rho=0.025, trust_ratio=0.1, ep
 
 
 def stochastic_flow_step(state, velocity, sigma, sigma_next, gamma, noise):
-    """Euler overshoot then variance-preserving re-noising at sigma_next.
+    """FDFO's flow-adapted EDM overshoot/re-noise step at sigma_next.
 
     For x_s=(1-s)*data+s*noise, preserve the data coefficient by scaling
     the overshot sample by (1-s_next)/(1-s_tilde), then restore noise variance.
