@@ -2,13 +2,14 @@ import argparse
 from dataclasses import asdict, replace
 import csv
 import json
+import math
 from pathlib import Path
 from statistics import fmean
 import time
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FD-SGS for Z-Image-Turbo: eight effective model steps")
+    parser = argparse.ArgumentParser(description="FD-SGS: Z-Image-Turbo and Hyper-SD CFG LoRAs")
     prompts = parser.add_mutually_exclusive_group(required=True)
     prompts.add_argument("--prompt")
     prompts.add_argument("--prompt-dataset", choices=["image-reward", "hpsv2"])
@@ -16,19 +17,25 @@ def main():
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--max-prompts", type=int)
     parser.add_argument("--dry-run", action="store_true", help="Print selected prompts/settings without loading models or starting W&B")
-    parser.add_argument("--model", default="Tongyi-MAI/Z-Image-Turbo")
+    parser.add_argument("--backbone", choices=["zimage", "hyper-sdxl", "hyper-sd15", "hyper-sd3"], default="zimage")
+    parser.add_argument("--steps", type=int, help="Checkpoint-matched steps: Z-Image 8; SDXL/SD1.5 8 or 12; SD3 4, 8, or 16")
+    parser.add_argument("--model", help="Base model override; defaults to the selected backbone's official base")
+    parser.add_argument("--hyper-lora-repo", default="ByteDance/Hyper-SD")
+    parser.add_argument("--lora-scale", type=float, help="Hyper-SD fusion scale: default 1 for SDXL/SD1.5, 0.125 for SD3")
+    parser.add_argument("--ddim-eta", type=float, default=0.5, help="Hyper-SD probe variance (0=deterministic, 1=DDPM-like)")
+    parser.add_argument("--cfg-scale", type=float, help="Hyper-SD CFG scale: default 5 for SDXL/SD1.5; 3/5/7 for SD3 4/8/16 steps")
     parser.add_argument("--method", choices=["fd-sgs", "independent-fd", "unguided", "compare"], default="fd-sgs")
     parser.add_argument("--particles", type=int, default=4)
-    parser.add_argument("--probes", type=int, default=1, help="Stochastic probes per anchor; guided batch size is K*(1+B)")
-    parser.add_argument("--twin-sampler", choices=["fdfo", "flow-grpo", "edm"], default="fdfo",
-                        help="Probe transition: FDFO overshoot/re-noise (default), Flow-GRPO SDE, or legacy edm alias")
-    parser.add_argument("--noise-level", type=float, default=0.05, help="Flow-GRPO diffusion strength; 0 gives Euler ODE probes")
+    parser.add_argument("--probes", type=int, default=1, help="Stochastic probes per anchor; guidance lookahead processes K*(1+B) states")
+    parser.add_argument("--twin-sampler", choices=["fdfo", "flow-grpo", "edm", "ddim"],
+                        help="Probe transition: default FDFO for Z-Image, DDIM for SDXL/SD1.5, Flow-GRPO for SD3")
+    parser.add_argument("--noise-level", type=float, default=0.05, help="Flow-GRPO diffusion strength for Z-Image/SD3; 0 removes probe noise")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--height", type=int, default=1024)
-    parser.add_argument("--width", type=int, default=1024)
-    parser.add_argument("--guidance-steps", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6])
+    parser.add_argument("--height", type=int)
+    parser.add_argument("--width", type=int)
+    parser.add_argument("--guidance-steps", type=int, nargs="+", help="One-based steps for reward guidance; default first six or fewer")
     parser.add_argument("--guidance-eval", choices=["predicted-clean", "final-rollout"],
-                        default="predicted-clean", help="Reward intermediate clean estimate or completed deterministic lookahead")
+                        help="Reward intermediate clean estimate or completed deterministic lookahead; Hyper-SD requires final-rollout")
     parser.add_argument("--rho", type=float, default=0.025, help="Final guided-step strength; also all steps with constant schedule")
     parser.add_argument("--rho-schedule", choices=["linear-decay", "constant"], default="linear-decay")
     parser.add_argument("--rho-start-multiplier", type=float, default=2.0,
@@ -42,8 +49,10 @@ def main():
     parser.add_argument("--reward-device", default="cpu")
     parser.add_argument("--reward-batch-size", type=int, default=4)
     parser.add_argument("--decode-batch-size", type=int, default=1)
+    parser.add_argument("--unet-batch-size", type=int, default=1,
+                        help="Hyper-SD: states per UNet or transformer call (CFG doubles the model batch)")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
+    parser.add_argument("--dtype", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--offload", action="store_true", help="Offload pipeline components to CPU between calls")
     parser.add_argument("--output", type=Path, default=Path("outputs/zimage"))
     parser.add_argument("--wandb-mode", choices=["disabled", "online", "offline"], default="disabled")
@@ -60,11 +69,56 @@ def main():
     import diffusers
     import transformers
     from .sampler import SamplingConfig
+    from .hyper_sd import HYPER_MODELS, HYPER_LORAS, HyperSamplingConfig
+    from .hyper_sd3 import HyperSD3SamplingConfig
     from .tracking import WandbLogger
     from .prompts import load_prompts
     from .rewards import REWARD_NAMES, RewardRegistry, normalize_reward
 
     try:
+        if args.backbone == "zimage":
+            args.steps = 8 if args.steps is None else args.steps
+            if args.steps != 8:
+                parser.error("Z-Image-Turbo supports exactly 8 effective steps")
+            args.model = args.model or "Tongyi-MAI/Z-Image-Turbo"
+            args.dtype = args.dtype or "bfloat16"
+            args.twin_sampler = args.twin_sampler or "fdfo"
+            args.guidance_eval = args.guidance_eval or "predicted-clean"
+            args.height = 1024 if args.height is None else args.height
+            args.width = 1024 if args.width is None else args.width
+            if args.twin_sampler == "ddim":
+                parser.error("--twin-sampler ddim requires a Hyper-SD backbone")
+        else:
+            args.steps = (16 if args.backbone == "hyper-sd3" else 8) if args.steps is None else args.steps
+            if (args.backbone, args.steps) not in HYPER_LORAS:
+                valid = sorted(s for backbone, s in HYPER_LORAS if backbone == args.backbone)
+                parser.error(f"{args.backbone} supports --steps {'/'.join(map(str, valid))}")
+            args.model = args.model or HYPER_MODELS[args.backbone]
+            args.dtype = args.dtype or "float16"
+            args.twin_sampler = args.twin_sampler or ("flow-grpo" if args.backbone == "hyper-sd3" else "ddim")
+            args.guidance_eval = args.guidance_eval or "final-rollout"
+            size = 512 if args.backbone == "hyper-sd15" else 1024
+            args.height = size if args.height is None else args.height
+            args.width = size if args.width is None else args.width
+            args.lora_scale = args.lora_scale if args.lora_scale is not None else (0.125 if args.backbone == "hyper-sd3" else 1.0)
+            args.cfg_scale = args.cfg_scale if args.cfg_scale is not None else (
+                {4: 3.0, 8: 5.0, 16: 7.0}[args.steps] if args.backbone == "hyper-sd3" else 5.0)
+            if not math.isfinite(args.lora_scale) or args.lora_scale <= 0:
+                parser.error("--lora-scale must be finite and positive")
+            if args.backbone == "hyper-sd3":
+                if args.twin_sampler not in {"flow-grpo", "fdfo"}:
+                    parser.error("Hyper-SD3 requires --twin-sampler flow-grpo or fdfo")
+            elif args.twin_sampler != "ddim":
+                parser.error("Hyper-SDXL/SD1.5 require --twin-sampler ddim")
+            if args.guidance_eval != "final-rollout":
+                parser.error("Hyper-SD requires --guidance-eval final-rollout")
+            if args.backbone != "hyper-sd3" and not 0 <= args.ddim_eta <= 1:
+                parser.error("--ddim-eta must be in [0, 1]")
+            if args.backbone != "hyper-sd3" and not 5 <= args.cfg_scale <= 8:
+                parser.error("--cfg-scale must be in the SDXL/SD1.5 CFG-LoRA recommended range [5, 8]")
+            if args.backbone == "hyper-sd3" and (not math.isfinite(args.cfg_scale) or args.cfg_scale <= 1):
+                parser.error("--cfg-scale must be finite and greater than 1 for SD3")
+        args.guidance_steps = args.guidance_steps or list(range(1, min(args.steps, 6) + 1))
         records, source = load_prompts(prompt=args.prompt, dataset=args.prompt_dataset, path=args.prompts_file,
                                        start=args.start_index, limit=args.max_prompts)
         args.reward = normalize_reward(args.reward)
@@ -74,14 +128,28 @@ def main():
         parser.error(str(exc))
 
     methods = ["unguided", "independent-fd", "fd-sgs"] if args.method == "compare" else [args.method]
-    configs = [SamplingConfig(particles=args.particles, method=m, seed=args.seed, height=args.height,
-                              width=args.width, guidance_steps=tuple(args.guidance_steps),
-                              guidance_eval=args.guidance_eval, rho=args.rho,
-                              rho_schedule=args.rho_schedule,
-                              rho_start_multiplier=args.rho_start_multiplier,
-                              repulsion=args.repulsion, exploration=args.exploration,
-                              twin_sampler=args.twin_sampler, noise_level=args.noise_level, probes=args.probes,
-                              trust_ratio=args.trust_ratio, decode_batch_size=args.decode_batch_size) for m in methods]
+    config_type = (SamplingConfig if args.backbone == "zimage" else
+                   HyperSD3SamplingConfig if args.backbone == "hyper-sd3" else HyperSamplingConfig)
+    common = dict(particles=args.particles, steps=args.steps, seed=args.seed, height=args.height,
+                  width=args.width, guidance_steps=tuple(args.guidance_steps),
+                  guidance_eval=args.guidance_eval, rho=args.rho,
+                  rho_schedule=args.rho_schedule,
+                  rho_start_multiplier=args.rho_start_multiplier,
+                  repulsion=args.repulsion, probes=args.probes,
+                  trust_ratio=args.trust_ratio, decode_batch_size=args.decode_batch_size)
+    if args.backbone == "zimage":
+        specific = dict(exploration=args.exploration, twin_sampler=args.twin_sampler, noise_level=args.noise_level)
+    elif args.backbone == "hyper-sd3":
+        specific = dict(cfg_scale=args.cfg_scale, backbone=args.backbone,
+                        twin_sampler=args.twin_sampler, noise_level=args.noise_level,
+                        exploration=args.exploration, unet_batch_size=args.unet_batch_size)
+    else:
+        specific = dict(ddim_eta=args.ddim_eta, cfg_scale=args.cfg_scale,
+                        backbone=args.backbone, unet_batch_size=args.unet_batch_size)
+    try:
+        configs = [config_type(method=m, **common, **specific) for m in methods]
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.reward_batch_size < 1:
         parser.error("--reward-batch-size must be positive")
     if args.wandb_image_limit < 1:
@@ -140,8 +208,29 @@ def main():
 
 def _load_pipeline(args):
     import torch
-    from diffusers import ZImagePipeline
-    pipe = ZImagePipeline.from_pretrained(args.model, torch_dtype=getattr(torch, args.dtype))
+    if args.backbone == "zimage":
+        from diffusers import ZImagePipeline
+        pipe = ZImagePipeline.from_pretrained(args.model, torch_dtype=getattr(torch, args.dtype))
+    else:
+        import importlib.util
+        if importlib.util.find_spec("peft") is None:
+            raise RuntimeError("Hyper-SD LoRA loading requires PEFT; install with pip install -e '.[hyper]'")
+        from diffusers import (DDIMScheduler, FlowMatchEulerDiscreteScheduler, StableDiffusionPipeline,
+                               StableDiffusionXLPipeline, StableDiffusion3Pipeline)
+        from .hyper_sd import HYPER_MODELS, HYPER_LORAS
+        pipeline_type = (StableDiffusion3Pipeline if args.backbone == "hyper-sd3" else
+                         StableDiffusionXLPipeline if args.backbone == "hyper-sdxl" else StableDiffusionPipeline)
+        load_kwargs = {"torch_dtype": getattr(torch, args.dtype)}
+        if args.dtype == "float16" and args.model == HYPER_MODELS[args.backbone] and args.backbone != "hyper-sd3":
+            load_kwargs["variant"] = "fp16"
+        pipe = pipeline_type.from_pretrained(args.model, **load_kwargs)
+        pipe.load_lora_weights(args.hyper_lora_repo, weight_name=HYPER_LORAS[(args.backbone, args.steps)])
+        pipe.fuse_lora(lora_scale=args.lora_scale)
+        if args.backbone == "hyper-sd3":
+            if not isinstance(pipe.scheduler, FlowMatchEulerDiscreteScheduler):
+                raise ValueError("Hyper-SD3 base model must use FlowMatchEulerDiscreteScheduler")
+        else:
+            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
     if args.offload:
@@ -155,14 +244,19 @@ def _execute(args, configs, tracker, pipe, registry, record, source):
     import torch
     import diffusers
     import transformers
-    from .sampler import sample
+    if args.backbone == "zimage":
+        from .sampler import sample
+    elif args.backbone == "hyper-sd3":
+        from .hyper_sd3 import sample
+    else:
+        from .hyper_sd import sample
 
     reward = registry.get(args.reward)
     summary = {}
     for config in configs:
-        probe_info = (f", {config.probes} {config.twin_sampler} probes per anchor"
+        probe_info = (f", {config.probes} {args.twin_sampler} probes per anchor"
                       if config.method != "unguided" else "")
-        print(f"Running {config.method}: {config.particles} particles{probe_info}, 8 effective steps", flush=True)
+        print(f"Running {config.method}: {config.particles} particles{probe_info}, {config.steps} steps", flush=True)
         images, stats = sample(pipe, args.prompt, reward, config,
                                on_step=tracker.step_callback(config.method))
         target = args.output / config.method

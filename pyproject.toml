@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8"]
 rewards = ["image-reward==1.5", "open-clip-torch==2.24.0", "openai-clip==1.0.1", "torchvision"]
+hyper = ["peft>=0.17,<1"]
 
 [project.scripts]
 fd-sgs = "fd_sgs.cli:main"

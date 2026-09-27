@@ -1,8 +1,74 @@
-# FD-SGS: Z-Image-Turbo, 8 effective steps
+# FD-SGS: Z-Image-Turbo and Hyper-SD CFG checkpoints
 
 Experimental implementation of [the local plan](plans/fd_sgs_improvement.md), inspired by
-[SGS](https://github.com/NhuGiap04/SGS). This is a standalone Z-Image adapter, not a copy
-of the upstream SD/SDXL pipelines. It does not train or modify model weights.
+[SGS](https://github.com/NhuGiap04/SGS). It supports Z-Image-Turbo and the
+CFG-preserved [Hyper-SD](https://huggingface.co/ByteDance/Hyper-SD) LoRAs. It does
+not train or modify model weights.
+
+## Hyper-SD checkpoints
+
+The CLI selects a matching base model and LoRA for each supported combination:
+
+| `--backbone` | `--steps` | Sampler | Default CFG | Default LoRA scale |
+|---|---|---|---:|---:|
+| `hyper-sdxl` | 8, 12 | trailing DDIM | 5 | 1 |
+| `hyper-sd15` | 8, 12 | trailing DDIM | 5 | 1 |
+| `hyper-sd3` | 4, 8, 16 | FlowMatch Euler | 3, 5, 7 respectively | 0.125 |
+
+Use **Hyper-SDXL** at 1024 px for the main image-quality experiment and
+**Hyper-SD1.5** at 512 px for a smaller check. The SD3 base model is
+[gated](https://huggingface.co/stabilityai/stable-diffusion-3-medium-diffusers):
+accept its license and authenticate with Hugging Face before loading it. These
+are the named CFG-preserved checkpoints; the separate 1/2-step unified LoRAs
+are not selected here.
+
+```bash
+python -m pip install -e '.[hyper,rewards]'
+fd-sgs --backbone hyper-sdxl --steps 12 --prompt "A red panda wearing a tiny astronaut helmet" \
+  --method compare --particles 2 --probes 1 --ddim-eta 0.5 \
+  --reward pickscore --offload --output outputs/hyper-sdxl-12-01
+
+fd-sgs --backbone hyper-sd3 --steps 16 --prompt "A red panda wearing a tiny astronaut helmet" \
+  --method compare --particles 2 --probes 1 --twin-sampler flow-grpo --noise-level 0.05 \
+  --reward pickscore --offload --output outputs/hyper-sd3-16-01
+```
+
+Replace `hyper-sdxl` with `hyper-sd15` for a 512 px SD1.5 run. Use
+`--reward brightness` and omit `rewards` from the install for a lighter plumbing
+check. `--backbone zimage` remains the default. The Colab notebook is kept
+local/ignored by Git and exposes backbone, checkpoint steps, sampler strength,
+CFG, and LoRA scale.
+
+Hyper-SDXL/SD1.5 use a **different** guidance path from Z-Image. At each guided step,
+the anchor takes a deterministic DDIM step (`eta=0`), while each probe takes a
+stochastic DDIM step from the same current state (`--ddim-eta`, default 0.5).
+Both resulting states are deterministically denoised through the remaining
+steps, decoded, and scored. Their reward and terminal-latent differences give
+the finite-difference direction; the corrected anchor continues sampling.
+Only anchor images are returned. The default guided steps are 1–6 (or fewer
+for a 4-step checkpoint); the total denoising steps match `--steps`.
+`--ddim-eta 0` removes the DDIM probe signal.
+
+SDXL/SD1.5 are diffusion models, so stochastic probes must use the DDIM
+scheduler's variance for their discrete noise schedule. The Flow-GRPO and FDFO
+flow transitions in the Z-Image path do not apply to these UNets. DDIM `eta`
+offers valid scheduler-controlled stochasticity, but distilled LoRAs
+may have different image quality under nonzero eta; compare it empirically
+against the deterministic baseline. The finite-difference direction is a
+reward-weighted local heuristic, not an exact reward gradient. Final rollouts
+cost 27 extra rollout time levels for an 8-step checkpoint guided at steps 1–6,
+or 51 for a 12-step checkpoint. CFG doubles each UNet batch.
+`--unet-batch-size 1` is the memory-saving default; increase it if your GPU
+has headroom. Start with two particles and one probe on Colab.
+
+Hyper-SD3 uses SD3's flow-matching scheduler rather than DDIM. Its anchors
+take deterministic FlowMatch Euler steps. Its probes use Flow-GRPO SDE noise
+by default (`--noise-level 0.05`), or FDFO overshoot/re-noise with
+`--twin-sampler fdfo --exploration ...`; both are scored after deterministic
+lookahead to the final latent. Its 16-step LoRA defaults to CFG 7 and fusion
+scale 0.125, following the model card. The 4/8-step SD3 LoRAs default to
+CFG 3/5. Nonzero exploration is experimental and should be judged against
+the deterministic baseline on the same checkpoint.
 
 ## Install and run
 
