@@ -221,3 +221,73 @@ def test_step_callback_does_not_change_sampling_or_budget():
     assert all(len(batch) == 6 for batch in previews)
     for key in ("sequential_nfe", "reward_calls", "reward_image_evaluations", "denoiser_batch_elements"):
         assert stats[key] == baseline[key]
+
+
+@pytest.mark.parametrize("wandb_mode", ["disabled", "offline"])
+def test_batch_prompts_four_final_rewards_and_seed_pairing(monkeypatch, tmp_path, wandb_mode):
+    import csv
+    import json
+    import sys
+    from diffusers.image_processor import VaeImageProcessor
+    from fd_sgs.cli import main
+    from fd_sgs.rewards import RewardRegistry
+
+    pipe = ToyPipe()
+    pipe.vae.enable_slicing = lambda: None
+    pipe.vae.enable_tiling = lambda: None
+    pipe.to = lambda device: pipe
+    pipe.image_processor = VaeImageProcessor()
+    monkeypatch.setattr(ZImagePipeline, "from_pretrained", lambda *a, **kw: pipe)
+    monkeypatch.setattr(RewardRegistry, "check_available", lambda *a, **kw: None)
+    calls = []
+    def fake_scorer(name):
+        def score(images, prompt):
+            calls.append((name, prompt, len(images)))
+            return [float(image.convert("L").getpixel((0, 0))) / 255 for image in images]
+        return score
+    monkeypatch.setattr(RewardRegistry, "get", lambda self, name: fake_scorer(name))
+    monkeypatch.setattr(sys, "argv", ["fd-sgs", "--prompt-dataset", "hpsv2", "--max-prompts", "2",
+                        "--method", "compare", "--particles", "2", "--reward", "pickscore",
+                        "--eval-rewards", "all", "--device", "cpu", "--dtype", "float32",
+                        "--height", "16", "--width", "16", "--output", str(tmp_path),
+                        "--wandb-mode", wandb_mode])
+    main()
+    rows = list(csv.DictReader((tmp_path / "results.csv").open()))
+    assert len(rows) == 12  # 2 prompts * 3 methods * 2 particles
+    assert set(row["method"] for row in rows) == {"unguided", "independent-fd", "fd-sgs"}
+    assert set(row["prompt_index"] for row in rows) == {"0", "1"}
+    assert set(row["seed"] for row in rows) == {"42", "43"}
+    assert set(row["prompt_id"] for row in rows) == {"0", "1"}
+    assert all(set(("imagereward", "pickscore", "hpsv2", "clipscore")) <= row.keys() for row in rows)
+    for index in (0, 1):
+        assert {row["seed"] for row in rows if row["prompt_index"] == str(index)} == {str(42 + index)}
+        for method in ("unguided", "independent-fd", "fd-sgs"):
+            target = tmp_path / f"prompt_{index:05d}" / method
+            data = json.loads((target / "metrics.json").read_text())
+            assert len(data["metrics"]["evaluation_scores"]) == 4
+            assert data["metrics"]["evaluation_reward_image_evaluations"] == 6
+    summary = json.loads((tmp_path / "batch_summary.json").read_text())
+    assert summary["methods"]["fd-sgs"]["prompts"] == 2
+    assert len([x for x in calls if x[0] == "hpsv2"]) == 6
+    if wandb_mode == "offline":
+        assert len(list(tmp_path.glob("prompt_*/wandb/offline-run-*/*.wandb"))) == 2
+        assert list(tmp_path.rglob("*.table.json"))
+
+
+def test_dry_run_lists_dataset_without_models_or_overwriting(monkeypatch, tmp_path, capsys):
+    import json
+    import sys
+    from fd_sgs.cli import main
+    existing = tmp_path / "prompt_00000" / "fd-sgs"
+    existing.mkdir(parents=True)
+    (existing / "best.png").write_bytes(b"keep")
+    monkeypatch.setattr(ZImagePipeline, "from_pretrained", lambda *a, **kw:
+                        pytest.fail("dry run must not load the model"))
+    monkeypatch.setattr(sys, "argv", ["fd-sgs", "--prompt-dataset", "image-reward",
+                        "--max-prompts", "1", "--eval-rewards", "all", "--dry-run",
+                        "--output", str(tmp_path)])
+    main()
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["prompts"][0]["id"] == "005695-0057"
+    assert len(planned["scorers"]) == 4
+    assert (existing / "best.png").read_bytes() == b"keep"

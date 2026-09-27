@@ -57,6 +57,12 @@ class CLIPScore(PickScore):
 class ImageReward:
     """Official ImageReward-v1.0 score, including its mean/std normalization."""
     def __init__(self, device="cpu", batch_size=4):
+        # ImageReward 1.5 imports helpers from their old Transformers location.
+        # Z-Image requires a newer Transformers, where they live in pytorch_utils.
+        from transformers import modeling_utils, pytorch_utils
+        for name in ("apply_chunking_to_forward", "find_pruneable_heads_and_indices", "prune_linear_layer"):
+            if not hasattr(modeling_utils, name):
+                setattr(modeling_utils, name, getattr(pytorch_utils, name))
         try:
             import ImageReward as rm
         except ImportError as exc:

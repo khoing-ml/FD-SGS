@@ -5,3 +5,5 @@ __pycache__/
 outputs/
 .pytest_cache/
 wandb/
+build/
+notebooks/fd_sgs_colab.ipynb

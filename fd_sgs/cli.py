@@ -81,14 +81,15 @@ def main():
         parser.error("--offload requires a CUDA device")
     # Refuse accidental overwrite before downloading/loading large models.
     batch = args.prompt is None
-    for record in records:
-        output = args.output / f"prompt_{record.index:05d}" if batch else args.output
-        for method in methods:
-            target = output / method
-            if target.exists() and any(target.iterdir()):
-                parser.error(f"Output directory is not empty: {target}; choose a new --output")
-    if batch and (args.output / "results.csv").exists():
-        parser.error("Batch results already exist; choose a new --output")
+    if not args.dry_run:
+        for record in records:
+            output = args.output / f"prompt_{record.index:05d}" if batch else args.output
+            for method in methods:
+                target = output / method
+                if target.exists() and any(target.iterdir()):
+                    parser.error(f"Output directory is not empty: {target}; choose a new --output")
+        if batch and (args.output / "results.csv").exists():
+            parser.error("Batch results already exist; choose a new --output")
     registry = RewardRegistry(args.reward_device, args.reward_batch_size, args.hps_version)
     scorer_names = list(dict.fromkeys([args.reward, *args.eval_rewards]))
     if args.dry_run:
@@ -164,6 +165,7 @@ def _execute(args, configs, tracker, pipe, registry, record, source):
         evaluation_scores = {args.reward: stats["final_rewards"]}
         for name in args.eval_rewards:
             if name not in evaluation_scores:
+                print(f"Evaluating {name} on {len(images)} final images", flush=True)
                 evaluation_scores[name] = registry.score(name, images, args.prompt)
         stats.update(evaluation_scores=evaluation_scores,
                      evaluation_wall_seconds=time.perf_counter() - evaluation_start,

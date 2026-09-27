@@ -27,6 +27,69 @@ anchor noise and probe-noise stream. Each method saves all particles, `best.png`
 `metrics.json`; the parent directory gets `comparison.json`. Output directories must
 be empty to prevent accidental overwrites. Use a new output path for each experiment.
 
+## SGS prompts and reward evaluation
+
+The project bundles the two files from
+[SGS text2img/prompts](https://github.com/NhuGiap04/SGS/tree/main/text2img/prompts)
+at revision `f410ab526c996bb9e7828ba92f02b68e35473a2f`:
+
+| `--prompt-dataset` | File | Number of prompts |
+|---|---|---:|
+| `image-reward` | `benchmark_ir.json` | 100 |
+| `hpsv2` | `hps_v2_all_eval.txt` | 50 |
+
+Hashes and source paths are in [fd_sgs/data/prompts/source.json](fd_sgs/data/prompts/source.json).
+Use `--prompts-file your_prompts.txt` for one prompt per nonblank line, or a JSON
+list of strings or `{ "id": "...", "prompt": "..." }` records. `--start-index` and
+`--max-prompts` select a stable slice; each prompt uses `seed + original index`,
+so methods see identical initial noise for the same prompt. `--dry-run` prints
+the selected prompts and settings without loading models or opening a W&B run.
+
+Install all four reward backends and run a small prompt batch:
+
+```bash
+python -m pip install -r requirements-rewards.txt
+fd-sgs --prompt-dataset image-reward --start-index 0 --max-prompts 2 \
+  --method compare --reward pickscore --eval-rewards all \
+  --particles 2 --height 512 --width 512 --offload \
+  --wandb-mode offline --output outputs/sgs-batch-01
+```
+
+`--reward` chooses the **guidance and final-selection** scorer: `imagereward`,
+`pickscore`, `hpsv2`, `clipscore`, `brightness`, or a `module:function` callable.
+`--eval-rewards all` adds ImageReward, PickScore, HPSv2, and CLIPScore on **final
+anchor images only**. You may list specific names instead. Already computed
+guidance-reward final scores are reused; extra scorers do not change images or the
+selected particle. All scores are higher-is-better and retain their own scales;
+do not add or average unlike scores. Use `--hps-version v2.1` for the newer HPS
+checkpoint; the default is v2.0, matching the SGS setup.
+
+Batch outputs live under `prompt_00000/<method>/` and include candidate PNGs,
+`best.png`, and `metrics.json` with every final scorer's per-particle values.
+`results.csv` has one row per particle, prompt, and method; `batch_summary.json`
+reports mean scores across all and guidance-selected particles for each method.
+These are separate from oracle selection by an evaluation scorer. In batch mode,
+W&B opens one run per prompt, grouped under the output name by default, with all
+four final scorer tables and comparison charts. Model loading is reused across
+prompts, and reward backends are loaded lazily and cached.
+
+The ImageReward package needs the `openai-clip` dependency and a compatibility
+shim for newer Transformers; the provided extra installs it. The HPSv2 backend
+loads the official `xswu/HPSv2` weights into OpenCLIP ViT-H/14, avoiding the
+HPSv2 package's old global-device behavior and test dependency pins. PickScore
+uses its documented CLIP-H processor; CLIPScore uses OpenAI ViT-L/14 cosine
+similarity as in SGS. Preprocessing differs somewhat from SGS's custom tensor
+scorers, so treat scores as consistent within this runner, not numerically identical
+to the upstream evaluation. Four reward backends plus Z-Image weights need
+substantial CPU/GPU memory. For a quick setup check, use `--eval-rewards` only
+after an initial run with the target reward alone.
+
+For Colab, open [notebooks/fd_sgs_colab.ipynb](notebooks/fd_sgs_colab.ipynb).
+Use **File → Upload notebook** in Google Colab if viewing this local workspace.
+It accepts either a ZIP upload of this project or a GitHub clone, checks GPU
+availability, installs dependencies, runs a small prompt batch, displays results,
+and can copy outputs to Google Drive.
+
 To run only FD-SGS:
 
 ```bash
