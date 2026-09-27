@@ -43,12 +43,18 @@ def test_step_logging_pairs_probe_rewards_and_uses_method_axes(monkeypatch, tmp_
             callback = logger.step_callback(method)
             callback({"step": 3, "sigma": .8, "sigma_next": .6, "guided": True,
                       "anchor_rewards": [1., 3.], "twin_rewards": [2., 5., 4., 7.],
-                      "correction_ratios": [.01, .03]}, list(range(6)))
+                      "guidance_strength": .05, "correction_ratios": [.01, .03]}, list(range(6)))
             data = logger.run.log.call_args.args[0]
             assert data[f"{method}/step"] == 3
             assert data[f"{method}/sampling/reward_difference_mean"] == 2.5
             assert data[f"{method}/sampling/correction_ratio_max"] == .03
+            assert data[f"{method}/sampling/guidance_strength"] == .05
             assert len(data[f"{method}/sampling/clean_predictions"]) == 2
+            callback({"step": 4, "sigma": .6, "sigma_next": .4, "guided": True,
+                      "guidance_eval": "final-rollout", "anchor_rewards": [1., 3.],
+                      "twin_rewards": [2., 5., 4., 7.], "correction_ratios": [.01, .03]},
+                     list(range(6)))
+            assert len(logger.run.log.call_args.args[0][f"{method}/sampling/final_rollouts"]) == 2
             assert "step" not in logger.run.log.call_args.kwargs
         assert logger.run.define_metric.call_count == 4
 
@@ -57,7 +63,9 @@ def test_final_tables_summaries_comparison_and_image_cap(monkeypatch, tmp_path):
     sdk = MagicMock()
     monkeypatch.setitem(sys.modules, "wandb", sdk)
     stats = dict(final_rewards=[1., 3., 2.], best_particle=1, sequential_nfe=8,
-                 denoiser_forward_calls=8, denoiser_batch_elements=48, reward_calls=4,
+                 denoiser_forward_calls=8, denoiser_batch_elements=48,
+                 rollout_denoiser_forward_calls=0, rollout_denoiser_batch_elements=0,
+                 total_denoiser_forward_calls=8, total_denoiser_batch_elements=48, reward_calls=4,
                  reward_image_evaluations=21, guidance_reward_image_evaluations=18,
                  particles=3, twin_trajectories=3, probes_per_particle=1, wall_seconds=2.,
                  peak_cuda_allocated_bytes=0, peak_cuda_reserved_bytes=0)

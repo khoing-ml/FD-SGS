@@ -95,6 +95,7 @@ To run only FD-SGS:
 ```bash
 fd-sgs --prompt "A mountain village reflected in a lake at sunrise" \
   --particles 4 --rho 0.025 --guidance-steps 1 2 3 4 5 6 \
+  --rho-schedule linear-decay --rho-start-multiplier 2 \
   --twin-sampler fdfo --exploration 0.0025 --repulsion 0.1 \
   --offload --output outputs/village
 ```
@@ -120,6 +121,16 @@ described in the [FDFO reference implementation](https://github.com/NVlabs/finit
 The previous name `edm` remains an alias for the same transition. `--exploration`
 sets its re-noising strength; the default is `0.0025`.
 
+FDFO scores completed paired trajectories for its training update. To compare
+finished images during inference-time guidance, use `--guidance-eval final-rollout`.
+At each guided step, this deterministically finishes the current anchor and probe
+states to sigma zero, decodes and scores those images, and uses their terminal latent
+difference for the finite-difference direction. The normal sampler state is unchanged
+by these lookaheads. The default `predicted-clean` mode scores one-step clean
+estimates and is much cheaper. Future probe noise is omitted in the lookahead, so
+`final-rollout` is a deterministic counterfactual, not a reproduction of FDFO training.
+In W&B, guided previews are labeled `final_rollouts` in this mode.
+
 `--twin-sampler flow-grpo` uses the `sde` drift and noise coefficients from the
 [official Flow-GRPO sampler](https://github.com/yifan123/flow_grpo/blob/main/flow_grpo/diffusers_patch/sd3_sde_with_logprob.py).
 It changes only the probe transitions; anchors still use deterministic Euler plus
@@ -129,6 +140,7 @@ the last interval; final probes are discarded. Calculations use float32.
 `--noise-level 0` gives deterministic Euler probes; `0.05` is an experimental starting
 value, not a validated optimum for Z-Image. `--exploration` controls only FDFO probes,
 while `--noise-level` controls only Flow-GRPO probes; the strengths are not interchangeable.
+Neither parameter changes the anchor guidance strength.
 This uses the sampling transition without GRPO training, transition log-probabilities,
 DAS importance weights, tempering, or manifold projection. Existing Stein correction
 normalization is retained for this initial pipeline experiment.
@@ -199,18 +211,23 @@ result logging.
 - Four anchors by default, each with one or more persistent stochastic probes sharing initial noise.
 - Deterministic Euler anchor updates; probes use FDFO overshoot/re-noise by default,
   or Flow-GRPO Euler–Maruyama when selected. All probes for an anchor receive its Stein correction.
-- At **one-based** steps 1 through 6, decode predicted-clean endpoints. The anchor
+- At **one-based** steps 1 through 6, decode guidance endpoints. By default, the anchor
   prediction is `base - sigma_next * velocity` (equal to `x_sigma - sigma * velocity`);
   the probe prediction uses its freshly sampled endpoint at `sigma_next`. This gives
   step 1 a real finite-difference signal despite shared initial noise. Z-Image's
-  transformer output is negated to obtain the scheduler's velocity convention.
+  transformer output is negated to obtain the scheduler's velocity convention. With
+  `final-rollout`, score completed deterministic continuations instead.
 - Decode both clean predictions, score with PickScore, and compute
   `(reward_twin - reward_anchor) * delta_clean_latent / (RMS(delta_clean_latent) + eps)`.
   With B probes, average B such directions per anchor; score each anchor only once per guided step.
 - RBF interaction with the SGS median/log(K+1) bandwidth and analytic source-gradient
   repulsion. Independent FD uses the same estimator without kernel mixing or repulsion.
 - Split correction after the base step, with per-particle correction/base norm ratio
-  `min(rho, trust_ratio)` (defaults 0.025 and 0.1). Zero fields stay zero.
+  `min(rho_step, trust_ratio)`. By default, `rho_step` decays linearly over guided
+  steps 1–6: 0.05, 0.045, 0.04, 0.035, 0.03, 0.025. The trust cap is 0.1.
+  `--rho-schedule constant` restores a fixed `--rho` at every guided step;
+  `--rho-start-multiplier` controls the initial/final ratio in linear mode.
+  Zero fields stay zero.
 - Return/rank only anchors. Unguided generation plus final ranking is Best-of-K.
 
 **Eight-step convention:** Diffusers 0.36.0's native Z-Image pipeline sets `sigma_min=0`.
@@ -243,9 +260,16 @@ Metrics record the active probe sampler, probe count, and total twin trajectorie
 Step `twin_rewards` lists are flattened in probe-major order: all K anchors' first
 probes, then all K anchors' second probes, and so on.
 
+`final-rollout` adds `sum(8 - step for step in guidance_steps)` batched transformer
+calls per guided method. For steps 1–6, that is **27 extra calls**, so a guided run
+uses 35 total calls and `35*K*(1+B)` total denoiser batch elements; the number of
+rewarded images remains the same. `sequential_nfe` and `denoiser_forward_calls`
+continue to describe the eight main trajectory steps. Separate `rollout_*` and
+`total_*` metrics account for the lookaheads in output JSON and W&B.
+
 `reward_calls` counts adapter invocations (7 in guided runs), not internal microbatches
 or remote requests. `reward_image_evaluations` counts individual scored images.
-Metrics also record each guided step's scores/correction ratios, sigmas, final scores,
+Metrics also record each guided step's scheduled strength, scores/correction ratios, sigmas, final scores,
 best index, wall time, peak allocated/reserved CUDA memory, config, and library versions.
 Time includes prompt encoding, sampling, VAE/reward work and final ranking, but excludes
 model loading and image saving. CPU reward memory is not included in CUDA memory.

@@ -14,7 +14,10 @@ class SamplingConfig:
     particles: int = 4
     steps: int = 8
     guidance_steps: tuple[int, ...] = (1, 2, 3, 4, 5, 6)  # one-based, effective model steps
+    guidance_eval: str = "predicted-clean"
     rho: float = 0.025
+    rho_schedule: str = "linear-decay"
+    rho_start_multiplier: float = 2.0
     repulsion: float = 0.1
     exploration: float = 0.0025
     twin_sampler: str = "fdfo"
@@ -32,6 +35,12 @@ class SamplingConfig:
             raise ValueError("Unknown sampling method")
         if self.twin_sampler not in {"fdfo", "edm", "flow-grpo"}:
             raise ValueError("twin_sampler must be fdfo or flow-grpo (edm is an alias for fdfo)")
+        if self.guidance_eval not in {"predicted-clean", "final-rollout"}:
+            raise ValueError("guidance_eval must be predicted-clean or final-rollout")
+        if self.rho_schedule not in {"constant", "linear-decay"}:
+            raise ValueError("rho_schedule must be constant or linear-decay")
+        if not math.isfinite(self.rho_start_multiplier) or self.rho_start_multiplier < 1:
+            raise ValueError("rho_start_multiplier must be finite and at least 1")
         if not isinstance(self.probes, int) or self.probes < 1:
             raise ValueError("probes must be a positive integer")
         if self.steps != 8:
@@ -66,8 +75,8 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
     reward(images, prompt) must return one finite scalar per PIL image; higher
     is better. It may be nondifferentiable. No backpropagation is performed.
     The pipeline must use the original deterministic FlowMatch Euler scheduler.
-    Optional on_step(trace, clean_images) receives diagnostics after each step;
-    clean_images contains existing reward previews at guided steps, otherwise None.
+    Optional on_step(trace, reward_images) receives diagnostics after each step;
+    reward_images contains the images scored at guided steps, otherwise None.
     """
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.pipelines.z_image.pipeline_z_image import calculate_shift
@@ -105,13 +114,41 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
                  if float(sigmas[i]) > float(sigmas[i + 1])]
     if len(intervals) != config.steps or float(sigmas[-1]) != 0:
         raise ValueError("Scheduler must produce exactly eight nonzero intervals ending at zero")
+    guided_steps = sorted(config.guidance_steps)
+    guidance_rhos = {
+        guided_step: (config.rho if config.rho_schedule == "constant" else
+                      config.rho * (1 + (config.rho_start_multiplier - 1)
+                                    * (1 - rank / max(len(guided_steps) - 1, 1))))
+        for rank, guided_step in enumerate(guided_steps)
+    }
     stats = {"sequential_nfe": 0, "denoiser_forward_calls": 0,
-             "denoiser_batch_elements": 0, "particles": k,
+             "denoiser_batch_elements": 0, "rollout_denoiser_forward_calls": 0,
+             "rollout_denoiser_batch_elements": 0, "particles": k,
              "twin_trajectories": k * config.probes if paired else 0,
              "probes_per_particle": config.probes if paired else 0,
              "twin_sampler": config.twin_sampler if paired else None,
              "reward_calls": 0, "reward_image_evaluations": 0,
              "guidance_reward_image_evaluations": 0, "steps": []}
+
+    def predict_velocity(states, timestep):
+        inputs = list(states.to(pipe.transformer.dtype).unsqueeze(2).unbind(0))
+        # Z-Image predicts increasing data-time velocity; the scheduler uses noise-time.
+        model_time = (1000 - timestep.expand(len(states))) / 1000
+        output = pipe.transformer(inputs, model_time, embeds * len(states), return_dict=False)[0]
+        return -torch.stack([v.float() for v in output]).squeeze(2)
+
+    def finish_from(states, step):
+        """Deterministically integrate from the current endpoint to sigma zero.
+
+        Use explicit Euler updates so lookahead cannot advance the live scheduler.
+        The probe's future noise is intentionally excluded from this counterfactual.
+        """
+        for future_i, future_t in intervals[step:]:
+            velocity = predict_velocity(states, future_t)
+            states = states + (float(sigmas[future_i + 1]) - float(sigmas[future_i])) * velocity
+            stats["rollout_denoiser_forward_calls"] += 1
+            stats["rollout_denoiser_batch_elements"] += len(states)
+        return states
 
     def score(images, guidance=False):
         values = torch.as_tensor(reward(images, prompt), device=device, dtype=torch.float32)
@@ -126,18 +163,15 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
     try:
         for step, (i, t) in enumerate(intervals, 1):
             states = torch.cat([anchors, twins]) if paired else anchors
-            inputs = list(states.to(pipe.transformer.dtype).unsqueeze(2).unbind(0))
-            # Z-Image predicts velocity in increasing data-time, scheduler uses noise-time.
-            model_time = (1000 - t.expand(len(states))) / 1000
-            output = pipe.transformer(inputs, model_time, embeds * len(states), return_dict=False)[0]
-            velocity = -torch.stack([v.float() for v in output]).squeeze(2)
+            velocity = predict_velocity(states, t)
             stats["sequential_nfe"] += 1
             stats["denoiser_forward_calls"] += 1
             stats["denoiser_batch_elements"] += len(states)
             s, sn = float(sigmas[i]), float(sigmas[i + 1])
             base = pipe.scheduler.step(velocity[:k], t, anchors, return_dict=False)[0]
             displacement = base - anchors
-            trace = {"step": step, "sigma": s, "sigma_next": sn, "guided": False}
+            trace = {"step": step, "sigma": s, "sigma_next": sn, "guided": False,
+                     "guidance_eval": config.guidance_eval}
             clean_images = None
             correction = torch.zeros_like(base)
             if paired:
@@ -147,12 +181,15 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
                                                 noise, sigma_cap=float(sigmas[1]))
                 else:  # FDFO overshoot/re-noise; "edm" is a legacy alias.
                     probe_base = stochastic_flow_step(twins, velocity[k:], s, sn, config.exploration, noise)
-            if paired and step in config.guidance_steps and config.rho > 0:
+            if paired and step in guidance_rhos and config.rho > 0:
                 # Score the probe after this step's stochastic transition so the
                 # first step has a finite-difference signal despite shared initial noise.
                 # The anchor endpoint prediction equals anchors - s * velocity[:k].
-                clean = torch.cat([base - sn * velocity[:k],
-                                   probe_base - sn * velocity[k:]])
+                if config.guidance_eval == "final-rollout":
+                    clean = finish_from(torch.cat([base, probe_base]), step)
+                else:
+                    clean = torch.cat([base - sn * velocity[:k],
+                                       probe_base - sn * velocity[k:]])
                 clean_images = decode_images(pipe, clean, config.decode_batch_size)
                 scores = score(clean_images, guidance=True)
                 pair_directions = fd_direction(clean[:k].repeat(repeats), clean[k:],
@@ -160,9 +197,11 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
                 direction = pair_directions.reshape(config.probes, k, *anchors.shape[1:]).mean(0)
                 field = (stein_field(base, direction, config.repulsion)
                          if config.method == "fd-sgs" else direction)
-                correction = relative_correction(field, displacement, config.rho, config.trust_ratio)
+                rho_step = guidance_rhos[step]
+                correction = relative_correction(field, displacement, rho_step, config.trust_ratio)
                 trace.update(guided=True, anchor_rewards=scores[:k].tolist(),
                              twin_rewards=scores[k:].tolist(),
+                             guidance_strength=rho_step,
                              correction_ratios=(rms(correction) / (rms(displacement) + 1e-8)).flatten().tolist())
             if paired:
                 # Translate each anchor's probes by the SAME correction so guidance itself
@@ -179,6 +218,10 @@ def sample(pipe, prompt, reward, config=SamplingConfig(), *, on_step=None):
         if cuda:
             torch.cuda.synchronize(device)
         stats.update(wall_seconds=time.perf_counter() - start,
+                     total_denoiser_forward_calls=(stats["denoiser_forward_calls"]
+                                                   + stats["rollout_denoiser_forward_calls"]),
+                     total_denoiser_batch_elements=(stats["denoiser_batch_elements"]
+                                                     + stats["rollout_denoiser_batch_elements"]),
                      peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(device) if cuda else 0,
                      peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(device) if cuda else 0,
                      final_rewards=scores.tolist(), best_particle=int(scores.argmax()))

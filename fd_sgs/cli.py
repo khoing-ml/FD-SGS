@@ -27,7 +27,12 @@ def main():
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--guidance-steps", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6])
-    parser.add_argument("--rho", type=float, default=0.025)
+    parser.add_argument("--guidance-eval", choices=["predicted-clean", "final-rollout"],
+                        default="predicted-clean", help="Reward intermediate clean estimate or completed deterministic lookahead")
+    parser.add_argument("--rho", type=float, default=0.025, help="Final guided-step strength; also all steps with constant schedule")
+    parser.add_argument("--rho-schedule", choices=["linear-decay", "constant"], default="linear-decay")
+    parser.add_argument("--rho-start-multiplier", type=float, default=2.0,
+                        help="Initial guided-step strength as a multiple of --rho (linear-decay only)")
     parser.add_argument("--repulsion", type=float, default=0.1)
     parser.add_argument("--exploration", type=float, default=0.0025, help="FDFO exploration gamma (only for --twin-sampler fdfo/edm)")
     parser.add_argument("--trust-ratio", type=float, default=0.1)
@@ -48,7 +53,7 @@ def main():
     parser.add_argument("--wandb-group")
     parser.add_argument("--wandb-tags", nargs="*", default=[])
     parser.add_argument("--wandb-image-limit", type=int, default=8, help="Maximum gallery images (winner always included)")
-    parser.add_argument("--wandb-previews", action="store_true", help="Log predicted-clean anchor/probe images at guided steps")
+    parser.add_argument("--wandb-previews", action="store_true", help="Log scored anchor/probe images at guided steps")
     args = parser.parse_args()
 
     import torch
@@ -70,7 +75,10 @@ def main():
 
     methods = ["unguided", "independent-fd", "fd-sgs"] if args.method == "compare" else [args.method]
     configs = [SamplingConfig(particles=args.particles, method=m, seed=args.seed, height=args.height,
-                              width=args.width, guidance_steps=tuple(args.guidance_steps), rho=args.rho,
+                              width=args.width, guidance_steps=tuple(args.guidance_steps),
+                              guidance_eval=args.guidance_eval, rho=args.rho,
+                              rho_schedule=args.rho_schedule,
+                              rho_start_multiplier=args.rho_start_multiplier,
                               repulsion=args.repulsion, exploration=args.exploration,
                               twin_sampler=args.twin_sampler, noise_level=args.noise_level, probes=args.probes,
                               trust_ratio=args.trust_ratio, decode_batch_size=args.decode_batch_size) for m in methods]

@@ -17,6 +17,10 @@ def test_colab_notebook_is_valid_python_and_covers_the_run():
     assert 'WANDB_API_KEY = "PASTE_YOUR_WANDB_API_KEY_HERE"' in source
     assert 'TWIN_SAMPLER = "fdfo"' in source
     assert 'GUIDANCE_STEPS = [1, 2, 3, 4, 5, 6]' in source
+    assert 'GUIDANCE_EVAL = "final-rollout"' in source
+    assert '"--guidance-eval", GUIDANCE_EVAL' in source
+    assert 'RHO_SCHEDULE = "linear-decay"' in source
+    assert '"--rho-start-multiplier", str(RHO_START_MULTIPLIER)' in source
     assert '"--guidance-steps", *[str(step) for step in GUIDANCE_STEPS]' in source
     assert '"--exploration", str(EXPLORATION)' in source
     assert "userdata.get(" not in source

@@ -21,16 +21,16 @@ The current Stein-Guided Sampling (SGS) framework performs test-time alignment b
 3. a particle-repulsion term.
 
 In the current formulation, the reward-attraction term requires an intermediate reward gradient
-\[
+$$
 \nabla_x \log h_t(x),
-\]
+$$
 where
-\[
+$$
 h_t(x_t)
 =
 \mathbb E_{X_1\sim p_{1|t}(\cdot\mid x_t)}
 \left[\exp(r(X_1))\right].
-\]
+$$
 
 This creates two practical limitations:
 
@@ -50,40 +50,40 @@ This directly extends SGS toward non-differentiable rewards such as black-box pr
 The main inspiration is **Finite Difference Flow Optimization for RL Post-Training of Text-to-Image Models** (McAllister et al., 2026).
 
 A crucial point is that their finite-difference construction is **not** the standard coordinate-wise or SPSA estimator
-\[
+$$
 \frac{R(x+\mu v)-R(x-\mu v)}{2\mu}v.
-\]
+$$
 
 Instead, they generate two nearby trajectories and use their **terminal reward difference** and **terminal image difference**.
 
 For two nearby endpoints \(x_T\) and \(x_T'\),
-\[
+$$
 \Delta R = R(x_T')-R(x_T),
-\]
-\[
+$$
+$$
 \Delta x = x_T'-x_T.
-\]
+$$
 
 Their theoretical prototype forms
-\[
+$$
 \widetilde g
 =
 \frac{\Delta R}{\sigma_c^2}\Delta x.
-\]
+$$
 
 In their practical implementation, the endpoint displacement is normalized:
-\[
+$$
 \overline{\Delta x}
 =
 \frac{\Delta x}
 {\operatorname{RMS}(\Delta x)+\epsilon},
-\]
+$$
 and the update direction is effectively
-\[
+$$
 g^{\mathrm{FDFO}}
 =
 \Delta R\,\overline{\Delta x}.
-\]
+$$
 
 The important interpretation is:
 
@@ -100,11 +100,11 @@ FDFO also evaluates a **10-step fast configuration**, showing that the finite-di
 ### 3.1 Original SGS interaction
 
 For particles
-\[
+$$
 \{X_t^{(i)}\}_{i=1}^K,
-\]
+$$
 the current SGS interaction has the form
-\[
+$$
 \frac{dX_t^{(i)}}{dt}
 =
 u_t(X_t^{(i)})
@@ -119,12 +119,12 @@ k(X_t^{(j)},X_t^{(i)})
 \nabla_{X_t^{(j)}}
 k(X_t^{(i)},X_t^{(j)})
 \right].
-\]
+$$
 
 The proposed method replaces
-\[
+$$
 \nabla_{X_t^{(j)}}\log h_t(X_t^{(j)})
-\]
+$$
 with a finite-difference reward direction.
 
 ---
@@ -132,41 +132,41 @@ with a finite-difference reward direction.
 ## 4. FDFO-style reward direction for SGS
 
 For particle \(j\), construct a pair of nearby realizations. Denote their predicted terminal outputs by
-\[
+$$
 \widehat z_t^{(j,a)},
 \qquad
 \widehat z_t^{(j,b)}.
-\]
+$$
 
 Evaluate the black-box reward:
-\[
+$$
 r_t^{(j,a)}
 =
 r\!\left(\widehat z_t^{(j,a)}\right),
-\]
-\[
+$$
+$$
 r_t^{(j,b)}
 =
 r\!\left(\widehat z_t^{(j,b)}\right).
-\]
+$$
 
 Define
-\[
+$$
 \Delta r_t^{(j)}
 =
 r_t^{(j,b)}-r_t^{(j,a)},
-\]
+$$
 and
-\[
+$$
 \Delta z_t^{(j)}
 =
 \widehat z_t^{(j,b)}
 -
 \widehat z_t^{(j,a)}.
-\]
+$$
 
 The normalized finite-difference reward direction is
-\[
+$$
 \boxed{
 g_{t,\mathrm{FD}}^{(j)}
 =
@@ -181,10 +181,10 @@ g_{t,\mathrm{FD}}^{(j)}
 +\epsilon
 }.
 }
-\]
+$$
 
 The resulting Stein field becomes
-\[
+$$
 \boxed{
 \Psi_{t,\mathrm{FD}}^{(i)}
 =
@@ -199,17 +199,17 @@ g_{t,\mathrm{FD}}^{(j)}
 k(X_t^{(i)},X_t^{(j)})
 \right].
 }
-\]
+$$
 
 The dynamics are then
-\[
+$$
 \frac{dX_t^{(i)}}{dt}
 =
 u_t(X_t^{(i)})
 +
 \lambda_t
 \Psi_{t,\mathrm{FD}}^{(i)}.
-\]
+$$
 
 ---
 
@@ -218,17 +218,17 @@ u_t(X_t^{(i)})
 The finite-difference direction obtained from a single pair can be noisy.
 
 Independent finite-difference guidance would use
-\[
+$$
 X_t^{(i)}
 \leftarrow
 X_t^{(i)}
 +
 \eta_t
 g_{t,\mathrm{FD}}^{(i)}.
-\]
+$$
 
 FD-SGS instead uses
-\[
+$$
 X_t^{(i)}
 \leftarrow
 X_t^{(i)}
@@ -240,7 +240,7 @@ k(X_t^{(j)},X_t^{(i)})
 g_{t,\mathrm{FD}}^{(j)}
 +
 \text{repulsion}.
-\]
+$$
 
 Therefore nearby particles exchange reward-improvement directions.
 
@@ -279,57 +279,57 @@ A causal approximation is required.
 ## 7. Causal finite difference using the predicted clean endpoint
 
 At intermediate time \(t\), let
-\[
+$$
 P_t(x,v_\theta(x,t))
-\]
+$$
 denote the model-dependent reconstruction of the predicted clean endpoint.
 
 For a flow model, this may be obtained from the current state and velocity prediction.  
 For a diffusion parameterization, it corresponds to the appropriate \(x_0\)- or clean-sample prediction.
 
 Define
-\[
+$$
 \widehat z_t
 =
 P_t(X_t,v_\theta(X_t,t)).
-\]
+$$
 
 For a nearby pair
-\[
+$$
 X_t^{(j,a)},
 \qquad
 X_t^{(j,b)},
-\]
+$$
 compute
-\[
+$$
 \widehat z_t^{(j,a)}
 =
 P_t(X_t^{(j,a)},v_\theta(X_t^{(j,a)},t)),
-\]
-\[
+$$
+$$
 \widehat z_t^{(j,b)}
 =
 P_t(X_t^{(j,b)},v_\theta(X_t^{(j,b)},t)).
-\]
+$$
 
 Then use
-\[
+$$
 \Delta r_t^{(j)}
 =
 r(\widehat z_t^{(j,b)})
 -
 r(\widehat z_t^{(j,a)}),
-\]
-\[
+$$
+$$
 \Delta z_t^{(j)}
 =
 \widehat z_t^{(j,b)}
 -
 \widehat z_t^{(j,a)}.
-\]
+$$
 
 This gives the causal estimator
-\[
+$$
 \boxed{
 g_{t,\mathrm{FD}}^{(j)}
 =
@@ -340,7 +340,7 @@ g_{t,\mathrm{FD}}^{(j)}
 \operatorname{RMS}(\Delta z_t^{(j)})+\epsilon
 }.
 }
-\]
+$$
 
 This is FDFO-inspired, but it is usable online during test-time sampling.
 
@@ -353,19 +353,19 @@ Several pairing strategies should be tested.
 ### 8.1 Twin-particle perturbation
 
 For each base particle \(X_t^{(j)}\), create two nearby twins:
-\[
+$$
 X_t^{(j,\pm)}
 =
 X_t^{(j)}
 \pm
 \xi_t^{(j)},
-\]
+$$
 where
-\[
+$$
 \xi_t^{(j)}
 \sim
 \mathcal N(0,\sigma_{\mathrm{FD},t}^2 I).
-\]
+$$
 
 This is the cleanest finite-difference construction, but approximately doubles the particle batch.
 
@@ -374,16 +374,16 @@ This is the cleanest finite-difference construction, but approximately doubles t
 ### 8.2 Stochastic twin trajectories
 
 Following the practical FDFO philosophy, start a pair from a shared state or shared initial noise and inject weak stochasticity during sampling:
-\[
+$$
 X_{n+1}^{(j,a)}
 =
 \Phi_n(X_n^{(j,a)};\omega_n^{(a)}),
-\]
-\[
+$$
+$$
 X_{n+1}^{(j,b)}
 =
 \Phi_n(X_n^{(j,b)};\omega_n^{(b)}).
-\]
+$$
 
 The perturbation should be small enough that the two samples remain semantically related but differ in details that can be compared by the reward.
 
@@ -394,27 +394,27 @@ The perturbation should be small enough that the two samples remain semantically
 To avoid doubling the batch, use existing SGS particles.
 
 For particle \(j\), choose
-\[
+$$
 \pi(j)
 =
 \arg\max_{\ell\neq j}
 k(X_t^{(j)},X_t^{(\ell)}),
-\]
+$$
 and form
-\[
+$$
 \Delta r_t^{(j)}
 =
 r(\widehat z_t^{(\pi(j))})
 -
 r(\widehat z_t^{(j)}),
-\]
-\[
+$$
+$$
 \Delta z_t^{(j)}
 =
 \widehat z_t^{(\pi(j))}
 -
 \widehat z_t^{(j)}.
-\]
+$$
 
 This is cheaper, but the pair may not be sufficiently local for the finite-difference interpretation.
 
@@ -429,36 +429,36 @@ The current SGS text-to-image experiments use many inference steps. For 8-NFE an
 A better formulation is **operator splitting**.
 
 Let
-\[
+$$
 \Phi_n
-\]
+$$
 be one step of the pretrained sampler from \(t_n\) to \(t_{n+1}\).
 
 First perform the pretrained step:
-\[
+$$
 \overline X_{n+1}^{(i)}
 =
 \Phi_n(X_n^{(i)}).
-\]
+$$
 
 Then, at selected guidance steps, apply a small Stein correction:
-\[
+$$
 X_{n+1}^{(i)}
 =
 \overline X_{n+1}^{(i)}
 +
 \eta_n
 \Psi_{n,\mathrm{FD}}^{(i)}.
-\]
+$$
 
 Thus
-\[
+$$
 \boxed{
 \text{pretrained few-step update}
 \quad\rightarrow\quad
 \text{small FD-Stein correction}.
 }
-\]
+$$
 
 This is preferable to interpreting a large Euler discretization of the original interacting ODE.
 
@@ -473,16 +473,16 @@ This problem should become more severe as the number of solver steps decreases.
 Instead of using the same absolute \(\lambda\) for 100-step and 8-step samplers, scale the correction relative to the pretrained displacement.
 
 Define
-\[
+$$
 \Delta_{n,\mathrm{base}}^{(i)}
 =
 \overline X_{n+1}^{(i)}
 -
 X_n^{(i)}.
-\]
+$$
 
 Then use
-\[
+$$
 \boxed{
 X_{n+1}^{(i)}
 =
@@ -496,16 +496,16 @@ X_{n+1}^{(i)}
 }
 \Psi_{n,\mathrm{FD}}^{(i)}.
 }
-\]
+$$
 
 Here \(\rho_n\) directly controls the correction size relative to the base solver step.
 
 Suggested initial sweep:
-\[
+$$
 \rho
 \in
 \{0.01,0.025,0.05,0.1\}.
-\]
+$$
 
 ---
 
@@ -521,43 +521,43 @@ Therefore, begin with middle-to-late guidance schedules.
 
 ### 10-NFE candidates
 
-\[
+$$
 \mathcal G_{10}^{(A)}
 =
 \{4,6,8\},
-\]
+$$
 
-\[
+$$
 \mathcal G_{10}^{(B)}
 =
 \{5,7,9\},
-\]
+$$
 
-\[
+$$
 \mathcal G_{10}^{(C)}
 =
 \{4,5,6,7,8\}.
-\]
+$$
 
 ### 8-NFE candidates
 
-\[
+$$
 \mathcal G_{8}^{(A)}
 =
 \{3,5,6\},
-\]
+$$
 
-\[
+$$
 \mathcal G_{8}^{(B)}
 =
 \{4,6\},
-\]
+$$
 
-\[
+$$
 \mathcal G_{8}^{(C)}
 =
 \{3,4,5,6\}.
-\]
+$$
 
 These are hypotheses to test, not assumptions.
 
@@ -567,22 +567,22 @@ These are hypotheses to test, not assumptions.
 
 It is important to distinguish:
 
-\[
+$$
 \text{sequential denoiser NFE}
-\]
+$$
 from
-\[
+$$
 \text{total denoiser FLOPs / batch evaluations}
-\]
+$$
 and
-\[
+$$
 \text{reward evaluations}.
-\]
+$$
 
 If paired states are evaluated in parallel as one batch, an 8-step sampler still has
-\[
+$$
 8
-\]
+$$
 sequential denoiser steps, but the total compute can be approximately doubled if every particle has a twin.
 
 Therefore all few-step experiments should report at least:
@@ -602,38 +602,38 @@ This prevents an apparent "8-NFE" method from hiding a much larger compute budge
 ## 13. Possible theoretical extension
 
 Let the exact reward score be
-\[
+$$
 g_t(x)
 =
 \nabla_x \log h_t(x),
-\]
+$$
 and suppose the finite-difference direction satisfies
-\[
+$$
 \widehat g_t(x)
 =
 g_t(x)+e_t(x).
-\]
+$$
 
 The FD-SGS field can be written as
-\[
+$$
 \widehat\Psi_t
 =
 \Psi_t+\Delta_t,
-\]
+$$
 where
-\[
+$$
 \Delta_t(x)
 =
 \mathbb E_{Y\sim\rho_t}
 \left[
 k(Y,x)e_t(Y)
 \right].
-\]
+$$
 
 The current SGS local KL-descent result has an approximation term that depends on mismatch from the pretrained marginal and the repulsion contribution.
 
 A natural extension is a bound of the schematic form
-\[
+$$
 \frac{d}{ds}
 \mathrm{KL}(\rho_{t,s}\Vert q_t)
 \Big|_{s=0}
@@ -647,11 +647,11 @@ D_k(\rho_t,q_t)
 -
 \delta_{t,\mathrm{FD}}
 \right],
-\]
+$$
 where
-\[
+$$
 \delta_{t,\mathrm{FD}}
-\]
+$$
 quantifies the RKHS norm of the finite-difference approximation error.
 
 The theoretical message would be:
@@ -688,13 +688,13 @@ If differentiable rewards are available, also include exact-gradient SGS at 8 an
 ### A. Finite difference vs. exact reward gradient
 
 Compare
-\[
+$$
 \nabla r
-\]
+$$
 against
-\[
+$$
 \Delta r\,\Delta z.
-\]
+$$
 
 Question:
 
@@ -707,16 +707,16 @@ Question:
 Use exactly the same finite-difference pairs.
 
 Independent:
-\[
+$$
 X_i
 \leftarrow
 X_i
 +
 \eta g_i^{\mathrm{FD}}.
-\]
+$$
 
 FD-SGS:
-\[
+$$
 X_i
 \leftarrow
 X_i
@@ -727,7 +727,7 @@ X_i
 k(X_j,X_i)g_j^{\mathrm{FD}}
 +
 \text{repulsion}.
-\]
+$$
 
 This isolates the benefit of particle interaction.
 
@@ -736,17 +736,17 @@ This isolates the benefit of particle interaction.
 ### C. Endpoint-difference normalization
 
 Compare
-\[
+$$
 g=\Delta r\,\Delta z
-\]
+$$
 against
-\[
+$$
 g
 =
 \Delta r
 \frac{\Delta z}
 {\operatorname{RMS}(\Delta z)+\epsilon}.
-\]
+$$
 
 FDFO reports that normalization is important for stability, so this should be tested explicitly in FD-SGS.
 
@@ -776,9 +776,9 @@ For 8 and 10 NFE compare:
 
 ### F. Number of particles
 
-\[
+$$
 K\in\{2,4,8,16\}.
-\]
+$$
 
 Question:
 
@@ -789,9 +789,9 @@ Question:
 ### G. Repulsion
 
 Compare
-\[
+$$
 \gamma=0
-\]
+$$
 against several positive repulsion strengths.
 
 This tests whether repulsion remains necessary once stochastic finite-difference pairing already creates local diversity.
@@ -801,9 +801,9 @@ This tests whether repulsion remains necessary once stochastic finite-difference
 ### H. Perturbation magnitude
 
 For explicit twin perturbations, sweep
-\[
+$$
 \sigma_{\mathrm{FD}}.
-\]
+$$
 
 Too small:
 - reward differences become noisy or numerically weak.
@@ -849,21 +849,21 @@ The most compelling result would be something like:
 
 A particularly strong ablation is:
 
-\[
+$$
 \text{same finite-difference pairs}
 +
 \text{same reward calls}
 +
 \text{same NFE}
-\]
+$$
 
 for
 
-\[
+$$
 \text{independent FD}
 \quad\text{vs.}\quad
 \text{FD-SGS}.
-\]
+$$
 
 If FD-SGS wins under matched query and compute budgets, the gain can be attributed directly to Stein interaction.
 
@@ -876,11 +876,11 @@ Finite-difference reward guidance alone is not sufficient: the sampler also need
 
 FDFO provides several useful design ideas for this purpose. The central principle is to separate:
 
-\[
+$$
 \text{exploration}
 \quad\text{from}\quad
 \text{reward-directed steering}.
-\]
+$$
 
 In the proposed FD-SGS framework:
 
@@ -897,29 +897,29 @@ A naive Euler--Maruyama perturbation is not ideal for a flow model because addin
 
 In FDFO's convention, sampling proceeds from \(t=1\) (noise) to \(t=0\) (data). For a deterministic step from \(t_i\) to \(t_{i+1}\), the stochastic sampler first **overshoots** to a slightly less noisy state
 
-\[
+$$
 \widetilde t_{i+1}
 =
 \frac{t_{i+1}}
 {1-\gamma_i t_{i+1}+\gamma_i},
-\]
+$$
 
 takes the ODE step to \(\widetilde t_{i+1}\), and then injects exactly enough fresh Gaussian noise to return to the target noise level \(t_{i+1}\).
 
 The resulting update in the FDFO parameterization is
 
-\[
+$$
 \widetilde x_{i+1}
 =
 x_i
 +
 (\widetilde t_{i+1}-t_i)
 v_\theta(x_i,t_i),
-\]
+$$
 
 followed by
 
-\[
+$$
 x_{i+1}
 =
 \frac{
@@ -933,15 +933,15 @@ x_{i+1}
 },
 \qquad
 \epsilon_i\sim\mathcal N(0,I).
-\]
+$$
 
 Here \(\gamma_i\) controls the fraction of uncertainty that is re-randomized at the step.
 
 **Important convention note.** The current SGS manuscript uses \(t=0\) for noise and \(t=1\) for data, opposite to FDFO. The safest implementation is therefore to define
 
-\[
+$$
 \tau = 1-t
-\]
+$$
 
 and apply the FDFO stochastic step in \(\tau\)-space rather than copying the formula directly with the SGS time variable.
 
@@ -957,37 +957,37 @@ This is attractive for inference-time SGS.
 
 For each particle, maintain an anchor trajectory
 
-\[
+$$
 X_n^{(j,0)}
-\]
+$$
 
 that follows the original deterministic few-step sampler, and generate only one stochastic probe
 
-\[
+$$
 X_n^{(j,1)}.
-\]
+$$
 
 The finite-difference signal becomes
 
-\[
+$$
 \Delta r_{j,n}
 =
 r(\widehat z_{j,n}^{(1)})
 -
 r(\widehat z_{j,n}^{(0)}),
-\]
+$$
 
-\[
+$$
 \Delta z_{j,n}
 =
 \widehat z_{j,n}^{(1)}
 -
 \widehat z_{j,n}^{(0)}.
-\]
+$$
 
 Then
 
-\[
+$$
 g_{j,n}^{\mathrm{FD}}
 =
 \Delta r_{j,n}
@@ -996,7 +996,7 @@ g_{j,n}^{\mathrm{FD}}
 }{
 \operatorname{RMS}(\Delta z_{j,n})+\epsilon
 }.
-\]
+$$
 
 This has three advantages:
 
@@ -1014,21 +1014,21 @@ FDFO finds improved stability when paired trajectories start from the same initi
 
 The same principle should be enforced in FD-SGS:
 
-\[
+$$
 X_0^{(j,0)}
 =
 X_0^{(j,1)}.
-\]
+$$
 
 The two branches should differ only through controlled stochastic exploration.
 
 This acts as a common-random-number variance-reduction mechanism: unrelated semantic variation caused by independent initial noise is canceled, so the observed
 
-\[
+$$
 \Delta r
 \quad\text{and}\quad
 \Delta z
-\]
+$$
 
 are more directly attributable to the local exploration perturbation.
 
@@ -1046,9 +1046,9 @@ FDFO evaluates three stochasticity schedules:
 
 Their default and strongest overall choice is a weak uniform schedule,
 
-\[
+$$
 \gamma_i = 0.0025,
-\]
+$$
 
 for all sampling steps.
 
@@ -1060,11 +1060,11 @@ For FD-SGS, sweep an effective stochasticity multiplier around the FDFO scale an
 
 A useful initial search is
 
-\[
+$$
 \gamma
 \in
 \{0,\gamma_0/2,\gamma_0,2\gamma_0,4\gamma_0\},
-\]
+$$
 
 where \(\gamma_0\) is a small baseline chosen for the specific flow parameterization.
 
@@ -1076,43 +1076,43 @@ Although FDFO finds uniform stochasticity strongest overall, its **interval sche
 
 For each rollout, sample an interval center \(c\), then define
 
-\[
+$$
 \gamma
 \propto
 \operatorname{LN}(t;c,\sigma_{\mathrm{int}}),
-\]
+$$
 
 where \(\operatorname{LN}\) is a logit-normal density over time.
 
 The FDFO construction is
 
-\[
+$$
 c\sim
 \mathcal N(\mu_{\mathrm{center}},
 \sigma_{\mathrm{center}}^2),
-\]
+$$
 
-\[
+$$
 \gamma
 \leftarrow
 \operatorname{LN}(t;c,\sigma_{\mathrm{int}}),
-\]
+$$
 
-\[
+$$
 \gamma
 \leftarrow
 \frac{\gamma}{\sum_n\gamma_n},
-\]
+$$
 
-\[
+$$
 \gamma
 \leftarrow
 \exp(w_{\mathrm{int}}\gamma)-1.
-\]
+$$
 
 FDFO uses
 
-\[
+$$
 \mu_{\mathrm{center}}=1.3,
 \qquad
 \sigma_{\mathrm{center}}=1.5,
@@ -1120,7 +1120,7 @@ FDFO uses
 \sigma_{\mathrm{int}}=0.25,
 \qquad
 w_{\mathrm{int}}=3.
-\]
+$$
 
 For FD-SGS, the interval schedule is interesting as an **exploration ablation**:
 
@@ -1138,25 +1138,25 @@ An important negative result from FDFO is that weighting parameter updates to ma
 
 For FD-SGS, this suggests keeping two schedules conceptually separate:
 
-\[
+$$
 \gamma_n^{\mathrm{explore}}
-\]
+$$
 
 for generating informative perturbations, and
 
-\[
+$$
 \eta_n^{\mathrm{guide}}
-\]
+$$
 
 for applying Stein corrections.
 
 A perturbation discovered at one noise scale can contain information that remains useful at later steps. Therefore the method should not assume
 
-\[
+$$
 \eta_n^{\mathrm{guide}}
 \propto
 \gamma_n^{\mathrm{explore}}.
-\]
+$$
 
 This should be tested rather than hard-coded.
 
@@ -1170,25 +1170,25 @@ For test-time sampling, full future information is unavailable, but a causal ana
 
 When a finite-difference direction is obtained at step \(n\),
 
-\[
+$$
 g_{n}^{\mathrm{FD}},
-\]
+$$
 
 reuse it for a short window:
 
-\[
+$$
 \bar g_{n}
 =
 \beta\bar g_{n-1}
 +
 (1-\beta)g_n^{\mathrm{FD}},
-\]
+$$
 
 and apply
 
-\[
+$$
 \bar g_n
-\]
+$$
 
 for the next one or two Stein corrections.
 
@@ -1202,20 +1202,20 @@ This is an FD-SGS extension motivated by FDFO's time-coherent update behavior, n
 
 A natural inference-time extension is to occasionally branch a particle into multiple stochastic probes:
 
-\[
+$$
 X_n^{(j,0)},
 X_n^{(j,1)},
 \ldots,
 X_n^{(j,B)}.
-\]
+$$
 
 Evaluate predicted-clean rewards
 
-\[
+$$
 r_{j,b}
 =
 r(\widehat z_{j,b}),
-\]
+$$
 
 then either:
 
@@ -1223,15 +1223,15 @@ then either:
 
 Choose
 
-\[
+$$
 b^\star
 =
 \arg\max_b r_{j,b},
-\]
+$$
 
 and use
 
-\[
+$$
 g_j
 =
 (r_{j,b^\star}-r_{j,0})
@@ -1247,13 +1247,13 @@ g_j
 \widehat z_{j,0}
 )+\epsilon
 }.
-\]
+$$
 
 #### Multi-probe estimator
 
 Use all probes:
 
-\[
+$$
 g_j
 =
 \frac1B
@@ -1271,7 +1271,7 @@ g_j
 \widehat z_{j,0}
 )+\epsilon
 }.
-\]
+$$
 
 The main trajectory then continues from the anchor or from a reward-selected branch.
 
@@ -1285,19 +1285,19 @@ The current SGS repulsion term already provides a measure of ensemble geometry. 
 
 Let
 
-\[
+$$
 D_n
 =
 \frac{2}{K(K-1)}
 \sum_{i<j}
 \|X_n^{(i)}-X_n^{(j)}\|^2
-\]
+$$
 
 measure particle spread.
 
 Then increase stochastic exploration when the ensemble becomes too concentrated:
 
-\[
+$$
 \gamma_n
 =
 \gamma_{\min}
@@ -1310,16 +1310,16 @@ Then increase stochastic exploration when the ensemble becomes too concentrated:
 {D_{\mathrm{target}}},
 0,1
 \right).
-\]
+$$
 
 An alternative is to use the median kernel similarity:
 
-\[
+$$
 C_n
 =
 \operatorname{median}_{i\neq j}
 k(X_n^{(i)},X_n^{(j)}).
-\]
+$$
 
 Large \(C_n\) indicates particle collapse, so exploration can be increased.
 
@@ -1333,18 +1333,18 @@ Not every stochastic perturbation provides a useful finite-difference signal.
 
 Define
 
-\[
+$$
 S_n
 =
 \operatorname{median}_{j}
 |\Delta r_{j,n}|.
-\]
+$$
 
 If
 
-\[
+$$
 S_n \approx 0,
-\]
+$$
 
 the exploration radius may be too small or the current predicted-clean samples may be too noisy for the reward to distinguish.
 
@@ -1354,23 +1354,23 @@ This motivates adapting \(\gamma_n\) to keep the finite-difference signal in an 
 
 For example,
 
-\[
+$$
 \gamma_{n+1}
 =
 \begin{cases}
 c_\uparrow\gamma_n,
 &
 S_n<S_{\min},
-\\[2mm]
+\$$2mm]
 c_\downarrow\gamma_n,
 &
 S_n>S_{\max},
-\\[2mm]
+\$$2mm]
 \gamma_n,
 &
 \text{otherwise}.
 \end{cases}
-\]
+$$
 
 This turns stochasticity into an active finite-difference probing mechanism rather than a fixed noise hyperparameter.
 
@@ -1384,21 +1384,21 @@ For test-time FD-SGS, the analogous mechanism is a **flow trust region**.
 
 Let
 
-\[
+$$
 v_{n,\mathrm{base}}^{(i)}
-\]
+$$
 
 be the pretrained flow velocity and
 
-\[
+$$
 \delta v_{n,\mathrm{Stein}}^{(i)}
-\]
+$$
 
 the FD-SGS correction.
 
 Constrain
 
-\[
+$$
 \frac{
 \|\delta v_{n,\mathrm{Stein}}^{(i)}\|
 }{
@@ -1406,11 +1406,11 @@ Constrain
 }
 \le
 c_n.
-\]
+$$
 
 Equivalently,
 
-\[
+$$
 \delta v
 \leftarrow
 \delta v
@@ -1423,7 +1423,7 @@ c_n\|v_{\mathrm{base}}\|
 \|\delta v\|+\epsilon
 }
 \right).
-\]
+$$
 
 This complements the relative correction scaling already proposed for few-step models and prevents exploration plus reward steering from overwhelming the pretrained transport.
 
@@ -1446,7 +1446,7 @@ A minimal first implementation should use:
 
 The conceptual pipeline is
 
-\[
+$$
 \boxed{
 \text{anchor}
 \rightarrow
@@ -1460,7 +1460,7 @@ The conceptual pipeline is
 \rightarrow
 \text{trust-region correction}.
 }
-\]
+$$
 
 This gives the flow model a genuine **explore--evaluate--share--steer** mechanism instead of relying on repulsion alone for exploration.
 
@@ -1483,13 +1483,13 @@ This gives the flow model a genuine **explore--evaluate--share--steer** mechanis
 
 The most important first comparison is
 
-\[
+$$
 \boxed{
 \text{deterministic SGS}
 \quad\text{vs.}\quad
 \text{stochastic-exploration FD-SGS}
 }
-\]
+$$
 
 under matched sequential NFE and transparent total-compute accounting.
 
@@ -1520,7 +1520,7 @@ A revised paper could state the contributions as:
 ### Finite-Difference Stein-Guided Sampling
 
 Many practically relevant reward functions are non-differentiable or prohibit backpropagation, which prevents direct evaluation of the reward score used by standard SGS. To remove this requirement, we construct a zeroth-order reward direction from pairs of nearby model predictions. For each particle \(X_t^{(j)}\), we obtain two nearby predicted clean samples \(\widehat z_t^{(j,a)}\) and \(\widehat z_t^{(j,b)}\), and evaluate their rewards. We define the finite-difference direction
-\[
+$$
 g_{t,\mathrm{FD}}^{(j)}
 =
 \left[
@@ -1541,9 +1541,9 @@ r(\widehat z_t^{(j,a)})
 \right)
 +\epsilon
 }.
-\]
+$$
 This direction points toward the locally preferred prediction without requiring differentiation through either the reward model or the generative trajectory. We replace the exact reward score in SGS with this estimator and aggregate the resulting directions across particles through the Stein kernel:
-\[
+$$
 \Psi_{t,\mathrm{FD}}^{(i)}
 =
 \frac1K
@@ -1556,7 +1556,7 @@ g_{t,\mathrm{FD}}^{(j)}
 \nabla_{X_t^{(j)}}
 k(X_t^{(i)},X_t^{(j)})
 \right].
-\]
+$$
 The kernel-weighted attraction lets particles exchange locally discovered reward-improving directions, while the repulsive component prevents collapse. This produces a derivative-free test-time alignment procedure that preserves the central interacting-particle structure of SGS.
 
 ---
@@ -1566,13 +1566,13 @@ The kernel-weighted attraction lets particles exchange locally discovered reward
 ### Few-Step Stein Corrections
 
 Directly transferring the continuous SGS update to an 8- or 10-step sampler can produce overly large corrections because each solver interval is substantially larger than in the original high-NFE setting. We therefore separate the pretrained solver step from the Stein correction. At step \(n\), we first compute
-\[
+$$
 \overline X_{n+1}^{(i)}
 =
 \Phi_n(X_n^{(i)}),
-\]
+$$
 where \(\Phi_n\) is one step of the pretrained few-step sampler. At selected guidance steps \(n\in\mathcal G\), we subsequently apply
-\[
+$$
 X_{n+1}^{(i)}
 =
 \overline X_{n+1}^{(i)}
@@ -1591,7 +1591,7 @@ X_n^{(i)}
 +\epsilon
 }
 \Psi_{n,\mathrm{FD}}^{(i)}.
-\]
+$$
 The dimensionless parameter \(\rho_n\) controls the Stein correction relative to the magnitude of the pretrained update. This normalization makes the guidance strength more transferable across solvers with different numbers of inference steps.
 
 ---
@@ -1686,9 +1686,9 @@ For the first prototype, keep the design minimal:
 - **Direction normalization:** RMS normalization, following FDFO.
 - **Kernel:** same RBF + median heuristic as current SGS.
 - **Correction scale:** relative correction ratio
-  \[
+  $$
   \rho\in\{0.01,0.025,0.05,0.1\}.
-  \]
+  $$
 - **Baselines:**
   1. unguided few-step sampler,
   2. Best-of-\(K\),
@@ -1698,13 +1698,13 @@ For the first prototype, keep the design minimal:
 
 The highest-priority experiment is the matched-budget comparison:
 
-\[
+$$
 \boxed{
 \text{Independent FD}
 \quad\text{vs.}\quad
 \text{FD-SGS}
 }
-\]
+$$
 
 with identical particles, finite-difference pairs, reward evaluations, and NFE.
 

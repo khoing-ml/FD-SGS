@@ -45,6 +45,8 @@ class WandbLogger:
                     f"{prefix}/sigma_next": trace["sigma_next"],
                     f"{prefix}/guided": int(trace["guided"])}
             if trace["guided"]:
+                if "guidance_strength" in trace:
+                    data[f"{prefix}/guidance_strength"] = trace["guidance_strength"]
                 anchors, twins = trace["anchor_rewards"], trace["twin_rewards"]
                 delta = [r - anchors[j % len(anchors)] for j, r in enumerate(twins)]
                 for name, values in (("anchor_reward", anchors), ("probe_reward", twins),
@@ -62,7 +64,9 @@ class WandbLogger:
                     indices = list(range(min(k, self.image_limit)))
                     indices += list(range(k, min(len(images), k + self.image_limit)))
                     scores = anchors + twins
-                    data[f"{prefix}/clean_predictions"] = [self.wandb.Image(
+                    media_key = ("final_rollouts" if trace.get("guidance_eval") == "final-rollout"
+                                 else "clean_predictions")
+                    data[f"{prefix}/{media_key}"] = [self.wandb.Image(
                         images[j], caption=(f"step {trace['step']} | "
                         + (f"anchor {j}" if j < k else f"probe {(j-k)//k}, anchor {(j-k)%k}")
                         + f" | reward {scores[j]:.5f}")) for j in indices]
@@ -77,6 +81,8 @@ class WandbLogger:
                   "reward_min": min(rewards), "reward_max": max(rewards),
                   "best_particle": stats["best_particle"]}
         for key in ("sequential_nfe", "denoiser_forward_calls", "denoiser_batch_elements",
+                    "rollout_denoiser_forward_calls", "rollout_denoiser_batch_elements",
+                    "total_denoiser_forward_calls", "total_denoiser_batch_elements",
                     "reward_calls", "reward_image_evaluations", "guidance_reward_image_evaluations",
                     "particles", "twin_trajectories", "probes_per_particle", "wall_seconds",
                     "peak_cuda_allocated_bytes", "peak_cuda_reserved_bytes"):
@@ -117,10 +123,12 @@ class WandbLogger:
         if self.run is None or len(self.completed) < 2:
             return
         table = self.wandb.Table(columns=["method", "mean_reward", "best_reward", "wall_seconds",
-                                           "denoiser_batch_elements", "reward_images"])
+                                           "denoiser_batch_elements", "total_denoiser_batch_elements",
+                                           "reward_images"])
         for method, values in self.completed.items():
             table.add_data(method, values["reward_mean"], values["reward_max"], values["wall_seconds"],
-                           values["denoiser_batch_elements"], values["reward_image_evaluations"])
+                           values["denoiser_batch_elements"], values["total_denoiser_batch_elements"],
+                           values["reward_image_evaluations"])
             if "unguided" in self.completed:
                 for metric in ("reward_mean", "reward_max"):
                     self.run.summary[f"{method}/vs_unguided/{metric}_delta"] = (

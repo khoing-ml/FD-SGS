@@ -96,6 +96,30 @@ def test_first_step_has_finite_difference_guidance_with_shared_initial_noise(twi
     assert max(stats["steps"][0]["correction_ratios"]) > 0
 
 
+@pytest.mark.parametrize("twin_sampler, probes", [("fdfo", 1), ("flow-grpo", 2)])
+def test_final_rollout_scores_completed_states_without_advancing_main_scheduler(twin_sampler, probes):
+    def constant_reward(images, prompt):
+        return [0.] * len(images)
+
+    baseline, _ = sample(ToyPipe(), "test", constant_reward,
+                         config(method="unguided"))
+    lookaheads = []
+    completed, stats = sample(ToyPipe(), "test", constant_reward,
+                              config(method="independent-fd", guidance_eval="final-rollout",
+                                     twin_sampler=twin_sampler, probes=probes),
+                              on_step=lambda trace, images: lookaheads.append(images) if images is not None else None)
+    torch.testing.assert_close(torch.stack(completed), torch.stack(baseline))
+    assert len(lookaheads) == 6
+    for images in lookaheads:
+        torch.testing.assert_close(torch.stack(images[:2]), torch.stack(baseline))
+    assert stats["sequential_nfe"] == stats["denoiser_forward_calls"] == 8
+    assert stats["rollout_denoiser_forward_calls"] == sum(8 - step for step in range(1, 7)) == 27
+    assert stats["rollout_denoiser_batch_elements"] == 27 * 2 * (1 + probes)
+    assert stats["total_denoiser_forward_calls"] == 35
+    assert stats["total_denoiser_batch_elements"] == 35 * 2 * (1 + probes)
+    assert stats["reward_calls"] == 7
+
+
 @pytest.mark.parametrize("method", ["fd-sgs", "independent-fd"])
 @pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
 @pytest.mark.parametrize("probes", [1, 3])
@@ -113,10 +137,19 @@ def test_guidance_schedule_budget_and_reproducibility(method, twin_sampler, prob
     assert stats["reward_calls"] == 7
     assert stats["reward_image_evaluations"] == 6 * 2 * (1 + probes) + 2
     assert [x["step"] for x in stats["steps"] if x["guided"]] == [1, 2, 3, 4, 5, 6]
-    for step in stats["steps"]:
-        if step["guided"]:
-            assert max(step["correction_ratios"]) <= .025001
+    for step, expected_rho in zip(stats["steps"][:6], (.05, .045, .04, .035, .03, .025)):
+        assert step["guidance_strength"] == pytest.approx(expected_rho)
+        assert max(step["correction_ratios"]) <= expected_rho + 1e-6
     assert pipe.freed
+
+
+def test_constant_rho_schedule_and_trust_cap():
+    _, stats = sample(ToyPipe(), "test", reward,
+                      config(method="independent-fd", rho=.04,
+                             rho_schedule="constant", trust_ratio=.02))
+    for step in stats["steps"][:6]:
+        assert step["guidance_strength"] == .04
+        assert max(step["correction_ratios"]) <= .020001
 
 
 @pytest.mark.parametrize("twin_sampler", ["fdfo", "flow-grpo"])
@@ -150,6 +183,8 @@ def test_bad_reward_fails_and_releases_hooks(bad):
 
 @pytest.mark.parametrize("kwargs", [{"particles": 0}, {"rho": -1}, {"exploration": float("nan")},
                                    {"probes": 0}, {"probes": 1.5}, {"twin_sampler": "unknown"},
+                                   {"guidance_eval": "unknown"}, {"rho_schedule": "unknown"},
+                                   {"rho_start_multiplier": .5}, {"rho_start_multiplier": float("nan")},
                                    {"noise_level": -1}, {"noise_level": float("inf")},
                                    {"height": 17}, {"steps": 9}, {"guidance_steps": (0, 3)}])
 def test_config_rejects_invalid_values(kwargs):
@@ -300,11 +335,15 @@ def test_dry_run_lists_dataset_without_models_or_overwriting(monkeypatch, tmp_pa
     monkeypatch.setattr(ZImagePipeline, "from_pretrained", lambda *a, **kw:
                         pytest.fail("dry run must not load the model"))
     monkeypatch.setattr(sys, "argv", ["fd-sgs", "--prompt-dataset", "image-reward",
-                        "--max-prompts", "1", "--eval-rewards", "all", "--dry-run",
+                        "--max-prompts", "1", "--guidance-eval", "final-rollout",
+                        "--eval-rewards", "all", "--dry-run",
                         "--output", str(tmp_path)])
     main()
     planned = json.loads(capsys.readouterr().out)
     assert planned["prompts"][0]["id"] == "005695-0057"
     assert len(planned["scorers"]) == 4
     assert planned["configs"][0]["twin_sampler"] == "fdfo"
+    assert planned["configs"][0]["guidance_eval"] == "final-rollout"
+    assert planned["configs"][0]["rho_schedule"] == "linear-decay"
+    assert planned["configs"][0]["rho_start_multiplier"] == 2.
     assert (existing / "best.png").read_bytes() == b"keep"
